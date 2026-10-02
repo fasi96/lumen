@@ -4,9 +4,9 @@
 
 Click the ✦ in your top bar, record your screen with your voice and your face in a bubble, and when you stop, the ums and long pauses are already cut out and a share link is on your clipboard. The video lives in **your own** Cloudflare account, which is free for most people, or simply stays on your computer.
 
-<!-- demo GIF goes here -->
+<p align="center"><img src="docs/demo.gif" alt="Click the sparkle in the bar, start recording, stop, and the share link is copied" width="640"></p>
 
-<!-- ▶ Watch the 1-minute demo (a Lumen share link) goes here -->
+<p align="center">▶ <a href="https://fasi-share.fasiulrehman.workers.dev/v/D8BGAHU5a7pZ"><b>Watch the demo (1:39)</b></a>, recorded and shared with Lumen itself</p>
 
 ## What it does
 
@@ -16,6 +16,10 @@ Click the ✦ in your top bar, record your screen with your voice and your face 
 - **Share links the moment you stop.** The link is copied before the upload even finishes. The page has a proper player, a clickable transcript, chapters, an optional password and expiry, and view counts, with a dashboard for all your videos.
 - **Face bubble (beta)**: your webcam in a bubble that follows your outline, reaches for your hands and is recorded with everything else. Hover it to change its size, shape and outline.
 - **Titles and summaries** written by AI for every shared video.
+
+| Two people? The bubble joins you, then pops | Hover the bubble to restyle it | The share page |
+|---|---|---|
+| <img src="docs/bubble-pop.gif" alt="A friend leans into the bubble; it joins both people, then pops apart" width="260"> | <img src="docs/bubble-toolbar.gif" alt="The bubble toolbar switching the outline from plain to glow to rainbow" width="240"> | <img src="docs/share-page.gif" alt="The share page with the player, transcript and speed buttons" width="300"> |
 
 ## Why Lumen, not Loom?
 

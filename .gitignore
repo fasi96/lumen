@@ -20,4 +20,4 @@ NOTES.local.md
 *.mp3
 *.flac
 *.gif
-!docs/demo.gif
+!docs/*.gif
