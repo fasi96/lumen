@@ -1,0 +1,9 @@
+#!/bin/bash
+# Runs the clean-up tools in their Python environment, with any pip-installed CUDA
+# libraries on the loader path. The environment lives outside the plugin folder
+# (~/.local/share/lumen/venv, made by `lumen setup`); an older in-place .venv still works.
+here=$(dirname "$(readlink -f "$0")")
+venv="${LUMEN_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/lumen/venv}"
+[[ -x $venv/bin/python ]] || venv="$here/.venv"
+libs=$(ls -d "$venv"/lib/python3*/site-packages/nvidia/*/lib 2>/dev/null | paste -sd:)
+LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$venv/bin/python" "$@"

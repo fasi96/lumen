@@ -1,0 +1,38 @@
+#!/bin/bash
+# Lumen's floating camera bubble.
+#   lumen-cam [args]          show it (replacing one that's already up); --demo for the demo routine
+#   lumen-cam stop            close it
+#   lumen-cam ping            exit 0 if it's running and answering
+#   lumen-cam hide | show     fade it out of the way (clicks pass through) / back in
+#   lumen-cam center          centre the (still) camera view on you, once
+#   lumen-cam place X Y W H   make sure it's inside this area (global coords): moves monitor/corner if needed
+here=$(dirname "$(readlink -f "$0")")/../cam
+pidf="${XDG_RUNTIME_DIR:-/tmp}/lumen-cam.pid"
+sock="${XDG_RUNTIME_DIR:-/tmp}/lumen-cam.sock"
+
+send() {
+  python3 - "$sock" "$*" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(1)
+try:
+    s.connect(sys.argv[1])
+    s.sendall(sys.argv[2].encode())
+    sys.exit(0 if s.recv(16).startswith(b"ok") else 1)
+except OSError:
+    sys.exit(1)
+PY
+}
+stop() { [[ -f $pidf ]] && kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; }
+
+case $1 in
+stop) stop; exit 0 ;;
+ping) send ping; exit $? ;;
+hide | show | center) send "$1"; exit $? ;;
+place) shift; send place "$@"; exit $? ;;
+esac
+
+stop
+echo $$ >"$pidf"
+# Layer shell has to be loaded before Wayland.
+LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec uv run -q --project "$here" --script "$here/lumen_cam.py" "$@"

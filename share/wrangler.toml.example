@@ -1,0 +1,21 @@
+# Lumen share worker (template: lumen setup writes wrangler.toml from this): share pages, video streaming, dashboard.
+# Videos live in R2, their details in D1. Deploy: npx wrangler deploy
+name = "lumen-share"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[[r2_buckets]]
+binding = "VIDEOS"
+bucket_name = "lumen-videos"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lumen"
+database_id = "YOUR-D1-DATABASE-ID"   # filled in by lumen setup
+
+[vars]
+OWNER_NAME = ""   # your name on share pages; empty shows the ✦ mark
+
+# Whisper on Cloudflare's GPUs for laptops without a good one (free daily allowance)
+[ai]
+binding = "AI"

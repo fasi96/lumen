@@ -1,0 +1,574 @@
+#!/bin/bash
+# Record a region, window or whole monitor straight to a GIF or an MP4.
+#
+#   gif-record                 toggle with the saved settings (the keybinding)
+#   gif-record start [--format=gif|mp4] [--target=region|window|monitor:NAME]
+#                    [--fps=N] [--mp4fps=N] [--width=N] [--delay=S]
+#                    [--codec=fastest|compatible|smallest]   (MP4 only)
+#                    [--share=off|cloudflare]   (MP4 only: link copied at stop, uploads via vshare)
+#                    [--clean=off|on]   (MP4 with sound: cut ums and long pauses; uncut copy kept)
+#                    [--audio=none|mic|both]   (MP4 only; both = mic + desktop sound;
+#                    the mic is cleaned up with the chain saved by voice-tune)
+#   gif-record stop            stop and save the GIF
+#   gif-record cancel          stop (or abort the countdown) and discard
+#   gif-record set KEY VALUE   change a saved setting (format, target, fps, mp4Fps, width, mp4Width,
+#                              delay, audio, mic, codec, share, clean, ai, camera)
+#   camera = off|on: your face in a bubble (lumen-cam). On shows it right away so you
+#        can frame yourself; a recording moves it into the area you pick.
+#   ai = auto|local|cloud: where the clean-up's Whisper runs (auto: GPU if usable,
+#        else your Cloudflare's Workers AI, else the processor; local: never the cloud;
+#        a failed cloud or GPU run finishes on the processor)
+#   gif-record mics            JSON: the mics, the system default, which have a voice profile
+#
+# mic is "default" (follow the system's input) or a PipeWire source name. Each mic
+# has its own voice profile in ~/.config/gif-record/voice.json, tuned with voice-tune.
+#
+# The bar widget (Lumen's bar/, the "lumen" Omarchy plugin) drives this and watches
+# ~/.cache/gif-record/state.json. Settings persist in ~/.config/gif-record/settings.json,
+# so the keybinding records whatever the panel was last set to.
+
+# Where Lumen is installed: this script lives in its bin/ (usually via a symlink).
+LUMEN_HOME="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CONF_DIR="$HOME/.config/gif-record"
+CONF="$CONF_DIR/settings.json"
+STATE_DIR="$HOME/.cache/gif-record"
+STATE="$STATE_DIR/state.json"
+CANCEL="$STATE_DIR/cancel"
+LOG="$STATE_DIR/log"
+mkdir -p "$CONF_DIR" "$STATE_DIR"
+
+[[ -f ~/.config/user-dirs.dirs ]] && source ~/.config/user-dirs.dirs
+OUT_DIR="${GIF_RECORD_DIR:-${XDG_VIDEOS_DIR:-$HOME/Videos}/GIFs}"
+MP4_DIR="${MP4_RECORD_DIR:-${XDG_VIDEOS_DIR:-$HOME/Videos}}"
+
+conf() { jq -r --arg k "$1" '.[$k] // empty' "$CONF" 2>/dev/null | grep . || echo "$2"; }
+state() { jq -r --arg k "$1" '.[$k] // empty' "$STATE" 2>/dev/null; }
+
+# write_state STATUS [EXTRA_JSON] — keeps the last GIF across writes
+write_state() {
+  local last lastsize extra=${2:-'{}'}
+  last=$(state last)
+  lastsize=$(state lastSize)
+  jq -nc --arg s "$1" --arg last "$last" --arg ls "$lastsize" --argjson extra "$extra" \
+    '{status: $s, last: $last, lastSize: $ls} + $extra' >"$STATE"
+}
+
+set_conf() {
+  local key=$1 val=$2
+  [[ -f $CONF ]] || echo '{}' >"$CONF"
+  if [[ $val =~ ^[0-9]+$ ]]; then
+    jq --arg k "$key" --argjson v "$val" '.[$k] = $v' "$CONF" >"$CONF.tmp"
+  else
+    jq --arg k "$key" --arg v "$val" '.[$k] = $v' "$CONF" >"$CONF.tmp"
+  fi && mv "$CONF.tmp" "$CONF"
+}
+
+alive() { [[ -n $1 ]] && kill -0 "$1" 2>/dev/null; }
+
+# What went wrong when a recorder died at the start, in words a person can act on.
+recorder_problem() {
+  local e
+  e=$(grep -m1 -iE "error|fail|unknown|cannot|denied|invalid" "$1" 2>/dev/null)
+  case $e in
+  *"unknown gpu vendor"* | *"failed to load opengl"* | *[Vv][Aa][Aa][Pp][Ii]* | *[Ee][Gg][Ll]*)
+    echo "Your graphics card isn't supported by the screen recorder" ;;
+  "") echo "The screen recorder stopped as soon as it started" ;;
+  *) echo "The screen recorder said: ${e#gsr error: }" ;;
+  esac
+}
+
+# Fail loudly: a notification that stays until dismissed, saying why and where the details are.
+fail_to_start() {
+  write_state idle
+  camera_on && lumen-cam show 2>/dev/null
+  notify -u critical "Lumen couldn't start recording" "$1. Details: ~/.cache/gif-record/log"
+  exit 1
+}
+
+# ---- The camera bubble (lumen-cam). It's an overlay on screen, so the recording
+# picks it up like any other pixel; all the recorder does is keep it out of the
+# way while you pick an area, then make sure it's inside that area.
+camera_on() { [[ $(conf camera off) == on ]]; }
+ensure_cam() {
+  lumen-cam ping && return 0
+  setsid -f lumen-cam >/dev/null 2>&1 </dev/null
+  for _ in $(seq 60); do sleep 0.2; lumen-cam ping && return 0; done
+  return 1
+}
+# cam_place X Y W H — inside this area, then fade back in
+cam_place() { camera_on || return 0; lumen-cam place "$@"; lumen-cam show; }
+
+VOICE="$CONF_DIR/voice.json"
+
+# The mic a recording will use: the pinned one if it's plugged in, else the system's.
+resolve_mic() {
+  local want=${1:-default}
+  if [[ $want != default && $want != default_input ]]; then
+    pactl list short sources | cut -f2 | grep -qxF "$want" && { echo "$want"; return; }
+    notify "Recorder mic not connected" "Using the system's default input instead"
+  fi
+  pactl get-default-source
+}
+
+# Voice chain for a mic: its own profile, else the untuned fallback (Natural).
+voice_filter() {
+  jq -r --arg m "$1" '.profiles[$m].filter // .fallback.filter // .filter // empty' "$VOICE" 2>/dev/null
+}
+
+list_mics() {
+  local voice='{}'
+  [[ -f $VOICE ]] && voice=$(cat "$VOICE")
+  pactl -f json list sources | jq -c --argjson v "$voice" --arg def "$(pactl get-default-source)" \
+    --arg mic "$(conf mic default)" '{
+      default: $def, mic: $mic,
+      mics: [.[] | select((.monitor_source // "") == "" and (.name | endswith(".monitor") | not)) | {
+        name,
+        label: (if (.name | startswith("alsa_input.pci-")) then "Laptop mic" else (.description // .name) end),
+        tuned: ($v.profiles[.name] != null),
+        preset: ($v.profiles[.name].preset // null)
+      }]
+    }'
+}
+
+# A crashed run can leave "recording" behind; anything whose process is gone is idle.
+current_status() {
+  local s pid
+  s=$(state status)
+  pid=$(state pid)
+  case $s in
+  picking | recording | countdown | converting) alive "$pid" && echo "$s" || echo idle ;;
+  *) echo idle ;;
+  esac
+}
+
+notify() { omarchy-notification-send "$@" 2>/dev/null; }
+refresh_indicators() { omarchy-shell -q omarchy.indicators refresh 2>/dev/null; }
+
+start() {
+  # Detach so the picker and the recording outlive whoever launched us.
+  if [[ -z $GIF_RECORD_DETACHED ]]; then
+    GIF_RECORD_DETACHED=1 setsid -f "$0" start "$@" </dev/null >>"$LOG" 2>&1
+    exit 0
+  fi
+
+  [[ $(current_status) == idle ]] || exit 0
+
+  local format target fps mp4fps width delay audio codec share clean
+  for arg in "$@"; do
+    case $arg in
+    --target=*) target=${arg#*=} ;;
+    --format=*) format=${arg#*=} ;;
+    --fps=*) fps=${arg#*=} ;;
+    --mp4fps=*) mp4fps=${arg#*=} ;;
+    --width=*) width=${arg#*=} ;;
+    --delay=*) delay=${arg#*=} ;;
+    --audio=*) audio=${arg#*=} ;;
+    --codec=*) codec=${arg#*=} ;;
+    --share=*) share=${arg#*=} ;;
+    --clean=*) clean=${arg#*=} ;;
+    esac
+  done
+  target=${target:-$(conf target region)}
+  format=${format:-$(conf format mp4)}
+  fps=${fps:-$(conf fps 15)}
+  mp4fps=${mp4fps:-$(conf mp4Fps 30)}
+  # GIFs and MP4s keep separate sizes: GIFs want small, MP4s want sharp text.
+  if [[ $format == mp4 ]]; then
+    width=${width:-$(conf mp4Width 1920)}      # 1080p: sharp text, ~3× faster to save than Full
+  else
+    width=${width:-$(conf width 960)}
+  fi
+  codec=${codec:-$(conf codec compatible)}
+  share=${share:-$(conf share off)}
+  clean=${clean:-$(conf clean off)}
+  [[ $format == mp4 && $audio != none ]] || clean=off
+  [[ $format == mp4 ]] || share=off
+  # Shared links must play on any phone: AV1 doesn't on older iPhones.
+  [[ $share != off && $codec == smallest ]] && codec=compatible
+  delay=${delay:-$(conf delay 0)}
+  audio=${audio:-$(conf audio none)}
+
+  # capture = gpu-screen-recorder's -w; backup = the same area for wf-recorder.
+  local capture=() backup=() label geo
+  case $target in
+  monitor:*)
+    capture=(-w "${target#monitor:}")
+    backup=(-o "${target#monitor:}")
+    label="${target#monitor:}"
+    if camera_on; then
+      ensure_cam
+      cam_place $(hyprctl monitors -j | jq -r --arg n "${target#monitor:}" \
+        '.[] | select(.name == $n) | "\(.x) \(.y) \(.width / .scale | floor) \(.height / .scale | floor)"')
+    fi
+    ;;
+  window | region)
+    rm -f "$CANCEL"
+    write_state picking "{\"pid\": $$}"
+    camera_on && { ensure_cam; lumen-cam hide; }
+    geo=$(omarchy-capture-region "$([[ $target == window ]] && echo windows || echo region)")
+    if [[ ! $geo =~ ^(-?[0-9]+),(-?[0-9]+)[[:space:]]([0-9]+)x([0-9]+)$ ]]; then
+      camera_on && lumen-cam show
+      write_state idle
+      exit 0
+    fi
+    capture=(-w "${BASH_REMATCH[3]}x${BASH_REMATCH[4]}+${BASH_REMATCH[1]}+${BASH_REMATCH[2]}")
+    backup=(-g "${BASH_REMATCH[1]},${BASH_REMATCH[2]} ${BASH_REMATCH[3]}x${BASH_REMATCH[4]}")
+    label="${BASH_REMATCH[3]}×${BASH_REMATCH[4]}"
+    cam_place "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+    ;;
+  *)
+    notify -u critical "Lumen" "Unknown target: $target"
+    exit 1
+    ;;
+  esac
+
+  rm -f "$CANCEL"
+  if ((delay > 0)); then
+    local until=$(($(date +%s%3N) + delay * 1000))
+    write_state countdown "{\"pid\": $$, \"until\": $until, \"label\": \"$label\"}"
+    while (($(date +%s%3N) < until)); do
+      [[ -f $CANCEL ]] && { rm -f "$CANCEL"; write_state idle; exit 0; }
+      sleep 0.1
+    done
+  fi
+
+  camera_on && ((delay == 0)) && sleep 0.6     # let the bubble settle into its corner first
+  local mp4="$STATE_DIR/rec-$(date +%s).mp4"
+  # GIFs are resampled to their own rate later, so 30 is plenty to record at.
+  local record_fps=$([[ $format == mp4 ]] && echo "$mp4fps" || echo 30)
+  # Sound only goes into MP4s. Mic and desktop are separate tracks here so the
+  # voice chain from voice-tune can clean up the mic alone; finish_mp4 mixes them.
+  local sound=() mic=""
+  if [[ $format == mp4 && $audio != none ]]; then
+    mic=$(resolve_mic "$(conf mic default)")
+  fi
+  if [[ $format == mp4 ]]; then
+    case $audio in
+    mic) sound=(-a "$mic" -ac aac) ;;
+    both) sound=(-a "$mic" -a default_output -ac aac) ;;
+    esac
+  fi
+  local err="$STATE_DIR/recorder.err" pid why note=""
+  gpu-screen-recorder "${capture[@]}" "${sound[@]}" -k auto -f "$record_fps" -fm cfr -cursor yes \
+    -fallback-cpu-encoding yes -o "$mp4" 2>"$err" &
+  pid=$!
+  while alive $pid && [[ ! -f $mp4 ]]; do sleep 0.1; done
+
+  if ! alive $pid; then
+    # gpu-screen-recorder needs Intel, AMD or NVIDIA graphics; in a VM or on other
+    # graphics it can't capture at all. The backup, wf-recorder, needs no GPU (mic only).
+    cat "$err" >>"$LOG"
+    why=$(recorder_problem "$err")
+    rm -f "$mp4"
+    command -v wf-recorder >/dev/null || fail_to_start "$why, and the backup recorder (wf-recorder) isn't installed: run 'lumen setup'"
+    local wsound=()
+    [[ $format == mp4 && $audio != none ]] && wsound=(--audio="$mic" -C aac)
+    [[ $format == mp4 && $audio == both ]] && note=" Only your mic is recorded with it, not desktop sound."
+    wf-recorder "${backup[@]}" "${wsound[@]}" -r "$record_fps" -c libx264 -p preset=veryfast -p crf=20 \
+      -x yuv420p -y -f "$mp4" 2>"$err" &
+    pid=$!
+    while alive $pid && [[ ! -f $mp4 ]]; do sleep 0.1; done
+    if ! alive $pid; then
+      cat "$err" >>"$LOG"
+      fail_to_start "$why, and the backup recorder couldn't start either"
+    fi
+    notify "Recording with the backup recorder" "$why, so Lumen switched to wf-recorder.$note"
+  fi
+
+  local since=$(date +%s%3N)
+  write_state recording "{\"pid\": $pid, \"since\": $since, \"label\": \"$label\", \"format\": \"$format\"}"
+  refresh_indicators
+
+  # However the recorder ends (our stop, Alt+Print, the indicator), we convert.
+  wait $pid
+  cat "$err" >>"$LOG" 2>/dev/null
+  refresh_indicators
+  local duration_ms=$(($(date +%s%3N) - since))
+
+  if [[ -f $CANCEL ]]; then
+    rm -f "$CANCEL" "$mp4"
+    write_state idle
+    exit 0
+  fi
+
+  if [[ $format == mp4 ]]; then
+    # Loom-style: the link exists and is on the clipboard before we even encode;
+    # its page says "uploading" until vshare finishes.
+    local share_id=""
+    if [[ $share == cloudflare ]]; then
+      local link
+      if link=$(vshare create --codec h264 2>>"$LOG"); then
+        share_id=$(jq -r .id <<<"$link")
+        wl-copy "$(jq -r .url <<<"$link")"
+        notify -t 4000 "Share link copied" "Paste it anywhere — the video appears once it's uploaded"
+      else
+        notify -u critical "Couldn't create a share link" "Saving the recording locally only"
+      fi
+    fi
+    finish_mp4 "$mp4" "$width" "$duration_ms" "$mic" "$codec" "$share_id" "$clean"
+  else
+    convert "$mp4" "$fps" "$width" "$duration_ms"
+  fi
+}
+
+# with_progress FROM TO cmd... — runs cmd, whose ffmpeg writes `-progress "$PROGRESS"`,
+# and maps that onto FROM..TO percent in the state file. Returns cmd's exit code.
+PROGRESS="$STATE_DIR/progress.fifo"
+with_progress() {
+  local from=$1 to=$2
+  shift 2
+  rm -f "$PROGRESS"
+  mkfifo "$PROGRESS"
+  (
+    last=-100
+    while IFS='=' read -r key us; do
+      [[ $key == out_time_us && $us =~ ^[0-9]+$ ]] || continue
+      pct=$((from + us / 10 * (to - from) / 100 / DURATION_MS))
+      ((pct > to)) && pct=$to
+      if ((pct >= last + 2)); then
+        last=$pct
+        write_state converting "{\"pid\": $$, \"progress\": $pct, \"format\": \"$FORMAT\"}"
+      fi
+    done <"$PROGRESS"
+  ) &
+  local watcher=$!
+  "$@"
+  local rc=$?
+  # If ffmpeg died before opening the fifo, the watcher is still blocked in open().
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  rm -f "$PROGRESS"
+  return $rc
+}
+
+# Pass 1 is two processes: an ffmpeg that has a palette output reports no progress
+# until the palette is written at the very end, so the decoding half runs on its
+# own and streams frames to a second ffmpeg that only builds the palette.
+make_palette() {
+  ffmpeg -y -loglevel error -nostats -progress "$PROGRESS" -ss 0.1 -i "$1" \
+    -vf "$3" -c:v rawvideo -f nut pipe:1 2>>"$LOG" |
+    ffmpeg -y -loglevel error -f nut -i pipe:0 -vf palettegen=stats_mode=diff -update 1 "$2" 2>>"$LOG"
+  ((PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0))
+}
+
+make_gif() {
+  ffmpeg -y -loglevel error -nostats -progress "$PROGRESS" -ss 0.1 -i "$1" -i "$2" \
+    -lavfi "[0:v]$4[x];[x][1:v]paletteuse=dither=sierra2_4a:diff_mode=rectangle" \
+    -loop 0 "$3" 2>>"$LOG"
+}
+
+media_seconds() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null | cut -d. -f1; }
+
+convert() {
+  local mp4=$1 fps=$2 width=$3
+  DURATION_MS=$(($4 > 0 ? $4 : 1))
+  mkdir -p "$OUT_DIR"
+  local gif="$OUT_DIR/gif-$(date +'%Y-%m-%d_%H-%M-%S').gif"
+  local palette="$STATE_DIR/palette.png"
+  local scale=$([[ $width == 0 ]] && echo "iw" || echo "'min($width,iw)'")
+  local frames="fps=$fps,scale=$scale:-2:flags=lanczos"
+
+  FORMAT=gif
+  write_state converting "{\"pid\": $$, \"progress\": 0, \"format\": \"gif\"}"
+
+  # Two passes, so nothing is buffered: a one-pass split/palettegen/paletteuse
+  # graph holds every raw frame in RAM until the palette exists (a 90 s
+  # full-res clip hit 18 GB). -ss 0.1 skips gpu-screen-recorder's warmup frame.
+  local ok=0
+  with_progress 0 40 make_palette "$mp4" "$palette" "$frames" &&
+    with_progress 40 99 make_gif "$mp4" "$palette" "$gif" "$frames" &&
+    ok=1
+  rm -f "$palette"
+
+  # Only trust the GIF if it covers the recording: an interrupted ffmpeg can
+  # still exit cleanly with a single frame written.
+  local want got
+  want=$(media_seconds "$mp4")
+  got=$(media_seconds "$gif")
+  if ((ok)) && [[ -s $gif ]] && ((${got:-0} + 1 >= ${want:-0})); then
+    rm -f "$mp4"
+    wl-copy --type image/gif <"$gif"
+    local size
+    size=$(du -h "$gif" | cut -f1)
+    jq -nc --arg last "$gif" --arg ls "$size" '{status: "idle", last: $last, lastSize: $ls}' >"$STATE"
+    notify -t 8000 "GIF saved ($size)" "Copied to clipboard — click to open" \
+      --image "$gif" --exec xdg-open -- "$gif"
+  else
+    rm -f "$gif"
+    mkdir -p "$OUT_DIR"
+    local kept="$OUT_DIR/$(basename "${gif%.gif}").mp4"
+    mv "$mp4" "$kept"
+    write_state idle
+    notify -u critical "GIF conversion failed" "Kept the recording: $kept"
+  fi
+}
+
+# Compression: "compatible" re-encodes with x264 (plays everywhere, ~45% smaller
+# than the raw GPU recording), "smallest" with SVT-AV1 (~65% smaller at the same
+# VMAF ~95; some apps and older iPhones can't play it), "fastest" keeps the GPU
+# recording as-is (instant, biggest; scaling still forces an x264 encode).
+# Measured 2026-09-27 on 4K and 2560x1600 screen clips: both encoders run at about
+# 2-3x realtime at 4K 30 fps, and 60 fps doubles the time and the size. Clipboard gets the file
+# (text/uri-list), which is what chat apps and file managers paste.
+finish_mp4() {
+  local src=$1 width=$2 mic=$4 codec=${5:-compatible} share_id=$6 clean=${7:-off}
+  DURATION_MS=$(($3 > 0 ? $3 : 1))
+  FORMAT=mp4
+  mkdir -p "$MP4_DIR"
+  local out="$MP4_DIR/recording-$(date +'%Y-%m-%d_%H-%M-%S').mp4"
+
+  write_state converting "{\"pid\": $$, \"progress\": 0, \"format\": \"mp4\"}"
+
+  # Track 1 is the mic, track 2 (if any) the desktop. The mic gets the voice chain
+  # saved by voice-tune; the desktop is mixed in underneath, then a limiter keeps
+  # the sum from clipping. Audio is always re-encoded.
+  local graph=() maps=(-map 0:v) vcodec=(-c:v copy) seek=() tracks voice
+  tracks=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" | wc -l)
+  voice=$(voice_filter "$mic")
+  if ((tracks > 0)); then
+    # A tiny fade in case the mic clicks as it opens; mono voice goes to both sides.
+    local chain="[0:a:0]${voice:-anull},afade=t=in:d=0.15,aformat=channel_layouts=stereo[mic]"
+    if ((tracks > 1)); then
+      # Desktop sound sits 6 dB under the voice so talking over a video stays clear.
+      chain+=";[0:a:1]aresample=48000,volume=-6dB[desk];[mic][desk]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.89:level=0[aout]"
+    else
+      chain+=";[mic]alimiter=limit=0.89:level=0[aout]"
+    fi
+    graph=("$chain")
+    maps+=(-map "[aout]")
+  fi
+  [[ $codec == fastest && $width != 0 ]] && codec=compatible
+  # Cleaning up: this pass only fixes the audio and copies the video; clean.py
+  # cuts and does the single real encode afterwards.
+  local final=$out
+  if [[ $clean == on ]] && ((tracks > 0)); then
+    out="$STATE_DIR/mixed-$$.mp4"
+    [[ $codec == fastest ]] && codec=compatible
+  else
+    clean=off
+  fi
+  if [[ $codec != fastest && $clean == off ]]; then
+    local vf=null
+    [[ $width != 0 ]] && vf="scale='min($width,iw)':-2:flags=lanczos"
+    graph=("${graph[@]}" "[0:v]$vf[vout]")
+    maps=(-map "[vout]" "${maps[@]:2}")
+    case $codec in
+    smallest) vcodec=(-c:v libsvtav1 -preset 10 -crf 40 -pix_fmt yuv420p) ;;
+    *) vcodec=(-c:v libx264 -preset faster -crf 23 -pix_fmt yuv420p) ;;
+    esac
+    seek=(-ss 0.1)   # skip the warmup frame; a stream copy can't cut mid-GOP, so only here
+  fi
+  local fc=()
+  ((${#graph[@]})) && fc=(-filter_complex "$(IFS=';'; echo "${graph[*]}")")
+
+  local ok=0
+  SVT_LOG=1 with_progress 0 99 ffmpeg -y -loglevel error -nostats -progress "$PROGRESS" "${seek[@]}" -i "$src" \
+    "${fc[@]}" "${maps[@]}" "${vcodec[@]}" -c:a aac -b:a 160k -movflags +faststart "$out" 2>>"$LOG" && ok=1
+
+  local want got
+  want=$(media_seconds "$src")
+  got=$(media_seconds "$out")
+  if ((ok)) && [[ -s $out ]] && ((${got:-0} + 1 >= ${want:-0})); then
+    rm -f "$src"
+  else
+    rm -f "$out"
+    mv "$src" "$out"
+    notify -u critical "Couldn't compress the recording" "Saved the original instead"
+    clean=off
+  fi
+
+  local note="" transcript=""
+  if [[ $clean == on ]]; then
+    clean_mp4 "$out" "$final" "$codec" "$width" && note=$CLEAN_NOTE transcript=$CLEAN_TRANSCRIPT
+    out=$final
+  fi
+
+  local size
+  size=$(du -h "$out" | cut -f1)
+  jq -nc --arg last "$out" --arg ls "$size" '{status: "idle", last: $last, lastSize: $ls}' >"$STATE"
+  # Shared: the link is already on the clipboard; upload in the background so the
+  # recorder is free again straight away. vshare reports progress and the result.
+  if [[ -n $share_id ]]; then
+    setsid -f vshare upload "$out" --id "$share_id" ${transcript:+--transcript "$transcript"} </dev/null >>"$LOG" 2>&1
+    return
+  fi
+  wl-copy --type text/uri-list "file://$out"
+  local thumb="$STATE_DIR/thumb.png"
+  ffmpeg -y -loglevel quiet -ss 0.2 -i "$out" -vframes 1 -vf "scale=480:-2" "$thumb" 2>/dev/null
+  local kind=$([[ $codec == smallest ]] && echo ", AV1" || echo "")
+  local body="File copied to clipboard — click to play"
+  [[ -n $note ]] && body="$note"$'\n'"$body"
+  notify -t 8000 "Recording saved ($size$kind)" "$body" \
+    --image "$thumb" --exec mpv -- "$out"
+}
+
+# clean_mp4 MIXED OUT CODEC WIDTH — cut ums and long pauses with Lumen's share/clean
+# (Whisper on the GPU), encoding once. The uncut recording goes to ~/Videos/uncut
+# in case a cut is ever wrong. Sets CLEAN_NOTE ("4 ums, 8 s of pauses removed")
+# and CLEAN_TRANSCRIPT (for the share page). On failure OUT is the uncut video.
+CLEAN_TOOL="$LUMEN_HOME/share/clean"
+clean_mp4() {
+  local mixed=$1 out=$2 codec=$3 width=$4 dir="$STATE_DIR/clean-$$"
+  CLEAN_NOTE="" CLEAN_TRANSCRIPT=""
+  write_state converting "{\"pid\": $$, \"progress\": 15, \"format\": \"mp4\"}"
+  rm -rf "$dir"
+  if [[ -x $CLEAN_TOOL/run ]] && with_progress 30 99 "$CLEAN_TOOL/run" "$CLEAN_TOOL/clean.py" "$mixed" "$dir" \
+      --fillers --silences --always --codec "$codec" --width "$width" --engine "$(conf ai auto)" --progress "$PROGRESS" >>"$LOG" 2>&1 &&
+    [[ -s $dir/clean.mp4 ]]; then
+    mkdir -p "$MP4_DIR/uncut" "$HOME/.local/share/vshare/transcripts"
+    mv "$dir/clean.mp4" "$out"
+    mv "$mixed" "$MP4_DIR/uncut/$(basename "$out")"
+    CLEAN_TRANSCRIPT="$HOME/.local/share/vshare/transcripts/$(basename "${out%.mp4}").json"
+    mv "$dir/transcript.json" "$CLEAN_TRANSCRIPT"
+    local n s
+    n=$(jq -r '.fillers_found // 0' "$dir/report.json")
+    s=$(jq -r '.seconds_removed // 0 | round' "$dir/report.json")
+    CLEAN_NOTE="Cleaned up: $n um$([[ $n == 1 ]] || echo s), ${s}s removed"
+    rm -rf "$dir"
+    return 0
+  fi
+  mv "$mixed" "$out"
+  rm -rf "$dir"
+  notify -u critical "Couldn't clean up the recording" "Saved it uncut instead"
+  return 1
+}
+
+stop() {
+  local status pid
+  status=$(current_status)
+  pid=$(state pid)
+  case $status in
+  recording) kill -INT "$pid" ;;
+  countdown) touch "$CANCEL" ;;  # nothing recorded yet
+  esac
+}
+
+cancel() {
+  local status pid
+  status=$(current_status)
+  pid=$(state pid)
+  case $status in
+  recording) touch "$CANCEL"; kill -INT "$pid" ;;
+  countdown) touch "$CANCEL" ;;
+  esac
+}
+
+case ${1:-toggle} in
+start) shift; start "$@" ;;
+stop) stop ;;
+cancel) cancel ;;
+set)
+  set_conf "$2" "$3"
+  if [[ $2 == camera ]]; then
+    if [[ $3 == on ]]; then (ensure_cam &) >/dev/null 2>&1; else lumen-cam stop; fi
+  fi
+  ;;
+mics) list_mics ;;
+toggle)
+  case $(current_status) in
+  idle) start ;;
+  recording | countdown) stop ;;
+  esac
+  ;;
+*) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

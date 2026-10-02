@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lumen · Voice</title>
+<style>
+  :root {
+    --bg: #101315; --panel: #161a1c; --line: #262b2e; --text: #cacccc; --muted: #7d8387;
+    --accent: #a8adb0; --hot: #de6145; --ok: #9fa5a9;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace; }
+  body { padding: 18px 18px 90px; }
+  h1 { font-size: 17px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; margin-bottom: 12px; }
+  .h { font-size: 11px; letter-spacing: .12em; color: var(--muted); margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  select, button { font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; }
+  select { flex: 1; min-width: 0; }
+  button { cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
+  button.rec { min-width: 108px; }
+  button.rec.on { background: var(--hot); border-color: var(--hot); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+
+  .meter { position: relative; height: 10px; border-radius: 5px; background: var(--bg);
+    border: 1px solid var(--line); margin: 12px 0 6px; overflow: hidden; }
+  .meter .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--accent); transition: width 80ms linear; }
+  .meter .pk { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text); left: 0; }
+  .meter .zone { position: absolute; top: 0; bottom: 0; left: 92%; right: 0; background: color-mix(in srgb, var(--hot) 25%, transparent); }
+  .meter.clip .fill { background: var(--hot); }
+  .note { font-size: 12px; color: var(--muted); min-height: 17px; }
+  .note.warn { color: var(--hot); }
+
+  canvas { width: 100%; height: 90px; display: block; cursor: pointer; border-radius: 6px; background: var(--bg); }
+  .ab { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .ab button { border: 0; border-radius: 0; background: transparent; padding: 7px 12px; }
+  .ab button.on { background: var(--text); color: var(--bg); }
+  .play { width: 44px; }
+  .spacer { flex: 1; }
+  .time { color: var(--muted); font-size: 12px; min-width: 88px; text-align: right; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { padding: 6px 11px; border-radius: 16px; }
+  .chips button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .chips .custom { font-size: 12px; color: var(--muted); align-self: center; margin-left: 4px; }
+
+  .slider { padding: 7px 0; }
+  .slider + .slider { border-top: 1px solid var(--line); }
+  .slider .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .slider .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .slider .val.changed::after { content: " •"; color: var(--hot); }
+  .slider .hint { font-size: 11px; color: var(--muted); }
+  input[type=range] { width: 100%; margin: 6px 0 2px; accent-color: var(--text); }
+
+  footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 18px; display: flex; gap: 8px;
+    align-items: center; background: color-mix(in srgb, var(--bg) 92%, transparent);
+    border-top: 1px solid var(--line); backdrop-filter: blur(6px); }
+  footer .status { flex: 1; font-size: 12px; color: var(--muted); }
+  .busy { opacity: .55; }
+  .empty { color: var(--muted); font-size: 12px; text-align: center; padding: 22px 0; }
+</style>
+</head>
+<body>
+  <h1>Lumen · Voice</h1>
+  <div class="sub">Each mic has its own sound. Pick a mic, record a sample, choose a preset and adjust by ear. Saving applies it whenever that mic records an MP4.</div>
+
+  <section>
+    <div class="h">1 · SAMPLE</div>
+    <div class="row">
+      <select id="mic" title="Which mic's sound you're tuning (the recorder panel picks which mic records)"></select>
+      <button id="rec" class="rec">● Record</button>
+    </div>
+    <div class="meter" id="meter"><div class="zone"></div><div class="fill"></div><div class="pk"></div></div>
+    <div class="note" id="recNote">Talk the way you would in a video, for 10–20 seconds. Include a pause so noise removal has something to work on.</div>
+  </section>
+
+  <section>
+    <div class="h">2 · LISTEN</div>
+    <canvas id="wave" width="1040" height="180"></canvas>
+    <div class="empty" id="noSample" hidden>No sample yet. Record one above.</div>
+    <div class="row" style="margin-top:10px">
+      <button id="play" class="play" title="Space">▶</button>
+      <div class="ab">
+        <button id="abT" class="on" title="B toggles">Tuned</button>
+        <button id="abO" title="B toggles">Original</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="time" id="time">0:00 / 0:00</div>
+    </div>
+    <div class="note" style="margin-top:6px">"Original" plays at the same loudness, so you're comparing tone rather than volume. Space plays or pauses, B switches.</div>
+  </section>
+
+  <section>
+    <div class="h">3 · PRESET</div>
+    <div class="chips" id="presets"></div>
+  </section>
+
+  <section>
+    <div class="h">4 · FINE TUNE <span style="letter-spacing:0">(double-click a slider to reset it)</span></div>
+    <div id="sliders"></div>
+  </section>
+
+  <footer>
+    <div class="status" id="status"></div>
+    <button id="revert">Revert</button>
+    <button id="save" class="primary">Use for recordings</button>
+  </footer>
+
+<script>
+const $ = id => document.getElementById(id)
+let META = {}, PRESETS = {}, saved = null, params = {}, presetName = "", warmup = 1
+let PROFILES = {}, FALLBACK = null, SAMPLES = {}, MICS = [], sysDefault = "", mic = ""
+let hasSample = false
+
+// ---------- boot
+async function boot() {
+  const s = await (await fetch("/state")).json()
+  const t = s.theme || {}
+  const css = document.documentElement.style
+  if (t.background) css.setProperty("--bg", t.background)
+  if (t.foreground) css.setProperty("--text", t.foreground)
+  if (t.accent) css.setProperty("--accent", t.accent)
+  if (t.selection) css.setProperty("--line", t.selection)
+  if (t.bright_red) css.setProperty("--hot", t.bright_red)
+  if (t.background) css.setProperty("--panel", `color-mix(in srgb, ${t.background} 88%, ${t.foreground || "#fff"})`)
+
+  META = s.params; PRESETS = s.presets; warmup = s.warmup
+  PROFILES = s.profiles; FALLBACK = s.fallback; SAMPLES = s.samples; MICS = s.mics; sysDefault = s.systemDefault
+
+  buildMics(); buildPresets(); buildSliders()
+  selectMic(s.mic)
+  $("mic").onchange = () => selectMic($("mic").value)
+}
+
+function micLabel(name) { return (MICS.find(m => m.name === name) || {}).label || name }
+
+function buildMics() {
+  const sel = $("mic"); sel.innerHTML = ""
+  for (const m of MICS) {
+    const o = document.createElement("option")
+    o.value = m.name
+    o.textContent = (PROFILES[m.name] ? "✓ " : "   ") + m.label +
+      (m.name === sysDefault ? "  (system default)" : "") + (m.muted ? "  (muted)" : "")
+    sel.appendChild(o)
+  }
+  if (mic) sel.value = mic
+}
+
+// Each mic keeps its own profile and sample; switching loads both.
+function selectMic(name) {
+  if (recTimer) return ($("mic").value = mic)
+  stopPlayback(); offset = 0
+  bufT = bufO = null; peaksT = peaksO = null; refLoudness = null
+  mic = name; $("mic").value = name
+  saved = PROFILES[name] || FALLBACK
+  params = { ...saved.params }; presetName = saved.preset
+  syncUI()
+  setSample(SAMPLES[name] || null)
+  if (!SAMPLES[name]) note("No sample for this mic yet. Record 10 to 20 seconds of talking.")
+}
+
+// ---------- presets + sliders
+function fmt(k, v) {
+  const m = META[k]
+  const n = Number.isInteger(m.step) ? String(Math.round(v)) : v.toFixed(1)
+  const sign = (m.unit === "dB" && v > 0) ? "+" : ""
+  return sign + n + " " + m.unit
+}
+
+function buildPresets() {
+  const box = $("presets"); box.innerHTML = ""
+  for (const name of Object.keys(PRESETS)) {
+    const b = document.createElement("button")
+    b.textContent = name; b.dataset.name = name
+    b.onclick = () => { params = { ...PRESETS[name] }; presetName = name; syncUI(); changed() }
+    box.appendChild(b)
+  }
+  const c = document.createElement("span"); c.className = "custom"; c.id = "customTag"
+  box.appendChild(c)
+}
+
+function buildSliders() {
+  const box = $("sliders"); box.innerHTML = ""
+  for (const [k, m] of Object.entries(META)) {
+    const d = document.createElement("div"); d.className = "slider"
+    d.innerHTML = `<div class="top"><span>${m.label}</span><span class="val" id="v_${k}"></span></div>
+      <input type="range" id="s_${k}" min="${m.min}" max="${m.max}" step="${m.step}">
+      <div class="hint">${m.hint}</div>`
+    box.appendChild(d)
+    const inp = d.querySelector("input")
+    inp.oninput = () => { params[k] = Number(inp.value); presetName = matchPreset(); syncUI(); changed() }
+    inp.ondblclick = () => {
+      const base = PRESETS[presetName] || saved.params
+      params[k] = base[k] ?? m.default; presetName = matchPreset(); syncUI(); changed()
+    }
+  }
+}
+
+function matchPreset() {
+  for (const [n, p] of Object.entries(PRESETS))
+    if (Object.keys(META).every(k => Number(p[k]) === Number(params[k]))) return n
+  return "Custom"
+}
+
+function syncUI() {
+  const ref = PRESETS[presetName]
+  for (const k of Object.keys(META)) {
+    $("s_" + k).value = params[k]
+    const v = $("v_" + k)
+    v.textContent = fmt(k, params[k])
+    v.classList.toggle("changed", presetName === "Custom" && Number(saved.params[k]) !== Number(params[k]))
+  }
+  for (const b of $("presets").querySelectorAll("button")) b.classList.toggle("on", b.dataset.name === presetName)
+  $("customTag").textContent = presetName === "Custom" ? "Custom" : ""
+  updateStatus()
+}
+
+function dirty() {
+  return !PROFILES[mic] || presetName !== saved.preset ||
+    Object.keys(META).some(k => Number(saved.params[k]) !== Number(params[k]))
+}
+
+function updateStatus(msg) {
+  if (typeof msg === "string") { $("status").textContent = msg; return }
+  const label = micLabel(mic)
+  $("status").textContent = !PROFILES[mic] ? `${label} isn't tuned yet (recordings use Natural)`
+    : dirty() ? "Unsaved changes" : `${label}: ${saved.preset}`
+  $("save").disabled = !dirty()
+  $("revert").disabled = !PROFILES[mic] || !dirty()
+}
+
+$("revert").onclick = () => { params = { ...saved.params }; presetName = saved.preset; syncUI(); changed() }
+$("save").onclick = async () => {
+  const body = { params, preset: presetName, mic, label: micLabel(mic) }
+  const r = await fetch("/save", { method: "POST", body: JSON.stringify(body) })
+  if (!r.ok) return updateStatus("Couldn't save")
+  saved = PROFILES[mic] = { preset: presetName, params: { ...params } }
+  buildMics(); syncUI(); updateStatus(`Saved: ${micLabel(mic)} records with ${presetName}`)
+}
+
+// ---------- recording the sample
+let recTimer = null
+$("rec").onclick = async () => {
+  if (recTimer) return stopRec()
+  stopPlayback()
+  await fetch("/record", { method: "POST", body: JSON.stringify({ mic }) })
+  $("rec").classList.add("on"); $("rec").textContent = "■ Stop"
+  recTimer = setInterval(pollLevel, 100)
+}
+
+async function stopRec() {
+  clearInterval(recTimer); recTimer = null
+  $("rec").classList.remove("on"); $("rec").textContent = "● Record"
+  const r = await (await fetch("/stop", { method: "POST", body: "{}" })).json()
+  resetMeter()
+  if (r.error && !r.sample) return note(r.error, true)
+  setSample(r.sample, true)
+}
+
+async function pollLevel() {
+  const l = await (await fetch("/level")).json()
+  if (!l.recording) {           // hit the 30 s limit on its own
+    clearInterval(recTimer); recTimer = null
+    $("rec").classList.remove("on"); $("rec").textContent = "● Record"
+    resetMeter()
+    return l.sample ? setSample(l.sample, true) : note(l.error || "Recording stopped", true)
+  }
+  if (l.elapsed < warmup) return note("Warming up the mic…")
+  const pct = db => Math.max(0, Math.min(100, (db + 60) / 60 * 100))   // -60..0 dB
+  $("meter").querySelector(".fill").style.width = pct(l.rms) + "%"
+  $("meter").querySelector(".pk").style.left = pct(l.maxPeak) + "%"
+  $("meter").classList.toggle("clip", l.maxPeak > -1)
+  const secs = Math.max(0, l.elapsed - warmup)
+  let msg = `Recording ${secs.toFixed(0)} s. Talk now.`
+  if (l.maxPeak > -1) msg = `Recording ${secs.toFixed(0)} s. Clipping: back off the mic a little.`
+  else if (secs > 3 && l.maxPeak < -45) msg = `Recording ${secs.toFixed(0)} s. Barely any signal: is this the right mic?`
+  note(msg, l.maxPeak > -1 || (secs > 3 && l.maxPeak < -45))
+}
+
+function resetMeter() {
+  $("meter").querySelector(".fill").style.width = "0"
+  $("meter").querySelector(".pk").style.left = "0"
+  $("meter").classList.remove("clip")
+}
+
+function note(t, warn) { $("recNote").textContent = t; $("recNote").classList.toggle("warn", !!warn) }
+
+function setSample(info, fresh) {
+  SAMPLES[mic] = info
+  hasSample = !!info
+  $("noSample").hidden = hasSample
+  $("wave").hidden = !hasSample
+  if (!info) return
+  let msg = `Sample: ${info.seconds.toFixed(1)} s, peak ${info.peak} dB`
+  let warn = false
+  if (info.peak > -0.5) { msg += " (clipped: turn Input trim down, or re-record further from the mic)"; warn = true }
+  else if (info.peak < -40) { msg += " (almost silent: wrong mic, or it's muted)"; warn = true }
+  else msg += ", level looks good"
+  note(msg, warn)
+  refLoudness = null
+  changed(fresh)
+}
+
+// ---------- audio engine: two looped sources in lockstep, crossfaded for A/B
+const ctx = new AudioContext()
+const gT = ctx.createGain(), gO = ctx.createGain()
+gT.connect(ctx.destination); gO.connect(ctx.destination); gO.gain.value = 0
+let bufT = null, bufO = null, srcs = [], playing = false, startedAt = 0, offset = 0, listenOrig = false
+let refLoudness = null, seq = 0, debounce = null
+
+function position() {
+  const dur = bufT ? bufT.duration : 0
+  if (!dur) return 0
+  return playing ? (ctx.currentTime - startedAt + offset) % dur : offset % dur
+}
+
+function startAt(pos) {
+  srcs.forEach(s => { try { s.stop() } catch {} }); srcs = []
+  if (!bufT) return
+  for (const [buf, g] of [[bufT, gT], [bufO, gO]]) {
+    if (!buf) continue
+    const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.connect(g)
+    s.start(0, Math.min(pos, buf.duration - 0.01)); srcs.push(s)
+  }
+  startedAt = ctx.currentTime; offset = pos; playing = true
+  $("play").textContent = "❚❚"
+}
+
+function stopPlayback() {
+  offset = position()
+  srcs.forEach(s => { try { s.stop() } catch {} }); srcs = []
+  playing = false; $("play").textContent = "▶"
+}
+
+$("play").onclick = () => { ctx.resume(); playing ? stopPlayback() : startAt(offset) }
+
+function setAB(orig) {
+  listenOrig = orig
+  const t = ctx.currentTime
+  gT.gain.setTargetAtTime(orig ? 0 : 1, t, 0.015)
+  gO.gain.setTargetAtTime(orig ? 1 : 0, t, 0.015)
+  $("abT").classList.toggle("on", !orig); $("abO").classList.toggle("on", orig)
+}
+$("abT").onclick = () => setAB(false)
+$("abO").onclick = () => setAB(true)
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return
+  if (e.code === "Space") { e.preventDefault(); $("play").click() }
+  else if (e.key === "b" || e.key === "B" || e.key === "a" || e.key === "A") setAB(!listenOrig)
+})
+
+$("wave").onclick = e => {
+  if (!bufT) return
+  const r = e.target.getBoundingClientRect()
+  const pos = (e.clientX - r.left) / r.width * bufT.duration
+  ctx.resume(); startAt(pos)
+}
+
+async function fetchAudio(path) {
+  const r = await fetch(path, { method: "POST", body: JSON.stringify({ params, mic }) })
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status)
+  return ctx.decodeAudioData(await r.arrayBuffer())
+}
+
+function changed(autoplay) {
+  clearTimeout(debounce)
+  debounce = setTimeout(() => rerender(autoplay), 120)
+}
+
+async function rerender(autoplay) {
+  if (!hasSample) return
+  const my = ++seq
+  document.body.classList.add("busy-render")
+  try {
+    const needRef = refLoudness !== params.loudness
+    const [t, o] = await Promise.all([fetchAudio("/render"), needRef ? fetchAudio("/reference") : Promise.resolve(bufO)])
+    if (my !== seq) return                // a newer change is already on its way
+    const pos = position()
+    bufT = t; bufO = o; refLoudness = params.loudness
+    peaksT = peaks(bufT); peaksO = peaks(bufO)
+    if (playing) startAt(pos)
+    else if (autoplay) { ctx.resume(); startAt(0) }
+  } catch (err) {
+    updateStatus("Render failed: " + err.message)
+  }
+}
+
+// ---------- waveform
+let peaksT = null, peaksO = null
+function peaks(buf) {
+  const W = $("wave").width, d = buf.getChannelData(0), step = Math.max(1, Math.floor(d.length / W))
+  const out = new Float32Array(W)
+  for (let x = 0; x < W; x++) {
+    let m = 0
+    for (let i = x * step, e = Math.min(d.length, i + step); i < e; i++) { const a = Math.abs(d[i]); if (a > m) m = a }
+    out[x] = m
+  }
+  return out
+}
+
+function draw() {
+  const c = $("wave"), g = c.getContext("2d"), W = c.width, H = c.height, mid = H / 2
+  const st = getComputedStyle(document.documentElement)
+  g.clearRect(0, 0, W, H)
+  const bars = (p, color) => {
+    if (!p) return
+    g.fillStyle = color
+    for (let x = 0; x < W; x++) { const h = Math.max(1, p[x] * (H / 2 - 4)); g.fillRect(x, mid - h, 1, h * 2) }
+  }
+  bars(listenOrig ? peaksT : peaksO, st.getPropertyValue("--line"))
+  bars(listenOrig ? peaksO : peaksT, st.getPropertyValue(listenOrig ? "--muted" : "--accent"))
+  if (bufT) {
+    const x = position() / bufT.duration * W
+    g.fillStyle = st.getPropertyValue("--text"); g.fillRect(x, 0, 2, H)
+    const f = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`
+    $("time").textContent = `${f(position())} / ${f(bufT.duration)}`
+  }
+  requestAnimationFrame(draw)
+}
+
+boot().then(() => requestAnimationFrame(draw))
+</script>
+</body>
+</html>

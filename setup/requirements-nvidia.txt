@@ -1,0 +1,4 @@
+# Speech AI on an NVIDIA card: the CUDA libraries faster-whisper loads.
+-r requirements-local.txt
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

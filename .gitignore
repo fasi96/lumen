@@ -1,0 +1,23 @@
+node_modules/
+.venv/
+__pycache__/
+*.bak
+*.pre-permic.bak
+.dev.vars
+.wrangler/
+share/clean/models/
+cam/.venv/
+sim-out/
+share/wrangler.toml
+NOTES.local.md
+
+# Media never belongs in this repo (the film lives in its own repo); keeps clones small.
+*.mp4
+*.webm
+*.mkv
+*.mov
+*.wav
+*.mp3
+*.flac
+*.gif
+!docs/demo.gif

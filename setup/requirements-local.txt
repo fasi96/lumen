@@ -1,0 +1,3 @@
+# Speech AI on this computer (processor).
+-r requirements-cloud.txt
+faster-whisper

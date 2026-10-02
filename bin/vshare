@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""vshare: Loom-style share links for recordings.
+
+  vshare upload FILE [--title T] [--dest cloudflare|drive]   link now, upload, done
+  vshare create [--title T] [--codec C]    reserve a link (prints JSON {id, url}); the
+                                           recorder runs this at stop, before encoding
+  vshare upload FILE --id ID               upload into a reserved link
+               [--transcript transcript.json]   (from clean.py: powers the transcript panel)
+  vshare polish ID                         give an existing share hover frames, Claude's title and
+                                           summary (only if still untitled) and the preview card
+  vshare dashboard                         open the Cloudflare dashboard (signs you in)
+  vshare list                              recent shares from this laptop (JSON)
+  vshare setup cloudflare URL TOKEN        where your Lumen share worker lives
+
+Cloudflare: Lumen's share/ folder (the worker), config in ~/.config/vshare/config.json.
+Progress for the bar: ~/.cache/vshare/state.json ({uploads: {id: {title, pct}}}).
+"""
+
+import concurrent.futures
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+
+HOME = os.path.expanduser("~")
+CONF = os.path.join(HOME, ".config/vshare/config.json")
+INDEX = os.path.join(HOME, ".local/share/vshare/shares.json")
+STATE = os.path.join(HOME, ".cache/vshare/state.json")
+PART = 10 * 1024 * 1024      # R2 wants equal parts (min 5 MB) except the last
+PARALLEL = 3
+# Lumen's install folder: this script lives in its bin/ (usually via a symlink).
+LUMEN_HOME = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+CLEAN = os.path.join(LUMEN_HOME, "share", "clean")   # Whisper transcription (clean.py via ./run)
+DEFAULT_TITLE = "Screen recording · "            # titles starting like this get replaced by Claude's
+LOCK = threading.Lock()   # upload threads share the progress file
+
+
+def load(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def dump(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(path + ".tmp", path)
+
+
+def notify(title, body="", *extra):
+    subprocess.run(["omarchy-notification-send", *extra, title, body],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def set_progress(vid, title=None, pct=None, done=False):
+    with LOCK:
+        _set_progress(vid, title, pct, done)
+
+
+def _set_progress(vid, title, pct, done):
+    s = load(STATE, {"uploads": {}})
+    ups = s.setdefault("uploads", {})
+    if done:
+        ups.pop(vid, None)
+    else:
+        u = ups.setdefault(vid, {})
+        if title is not None:
+            u["title"] = title
+        if pct is not None:
+            u["pct"] = pct
+        u["updated"] = time.time()
+    dump(STATE, s)
+
+
+# ---------- Cloudflare
+
+def cf():
+    c = load(CONF, {}).get("cloudflare")
+    if not c or not c.get("url") or not c.get("token"):
+        sys.exit("vshare: Cloudflare isn't set up (vshare setup cloudflare URL TOKEN)")
+    return c["url"].rstrip("/"), c["token"]
+
+
+def call(method, path, body=None, data=None, ctype="application/json", timeout=120):
+    base, token = cf()
+    if body is not None:
+        data = json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 # Cloudflare's bot check rejects Python's default user agent (error 1010)
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": ctype,
+                                          "User-Agent": "vshare/1.0 (+gif-record)"})
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read() or b"{}")
+        except (urllib.error.URLError, TimeoutError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code < 500:
+                raise RuntimeError(f"{method} {path}: {e.code} {e.read()[:200]!r}")
+            if attempt == 3:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+
+def probe(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=codec_name,width,height:format=duration", "-of", "json", path],
+                       capture_output=True, text=True)
+    try:
+        j = json.loads(r.stdout)
+        s = j["streams"][0]
+        return {"codec": s.get("codec_name"), "width": s.get("width"), "height": s.get("height"),
+                "duration": float(j["format"]["duration"])}
+    except (json.JSONDecodeError, KeyError, IndexError, ValueError):
+        return {}
+
+
+def create(title, codec=None):
+    r = call("POST", "/api/videos", {"title": title, "codec": codec})
+    remember({"id": r["id"], "url": r["url"], "title": title, "dest": "cloudflare",
+              "created": int(time.time() * 1000), "status": "uploading"})
+    return r
+
+
+def make_transcript(path):
+    """Transcribe with clean.py (no cuts) so every share gets a transcript panel."""
+    if not os.path.exists(os.path.join(CLEAN, "run")):
+        return None
+    out = tempfile.mkdtemp(prefix="vshare-")
+    engine = load(os.path.join(HOME, ".config/gif-record/settings.json"), {}).get("ai", "auto")
+    r = subprocess.run([os.path.join(CLEAN, "run"), os.path.join(CLEAN, "clean.py"), path, out, "--engine", engine],
+                       capture_output=True, text=True)
+    t = os.path.join(out, "transcript.json")
+    return t if r.returncode == 0 and os.path.exists(t) else None
+
+
+def tool(script, *args):
+    """Run one of share/clean's scripts in its venv; returns stdout or None."""
+    r = subprocess.run([os.path.join(CLEAN, "run"), os.path.join(CLEAN, script), *args],
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def fmt_dur(s):
+    s = int(round(s or 0))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def upload(path, vid, title, transcript=None):
+    info = probe(path)
+    size = os.path.getsize(path)
+    set_progress(vid, title, 0)
+    # Transcribe on the GPU while the video uploads; both land before the page flips to ready.
+    pending = None
+    if not transcript:
+        pending = concurrent.futures.ThreadPoolExecutor(1).submit(make_transcript, path)
+    try:
+        # Poster first, so the "uploading" page and link previews already have a picture.
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(min(1.0, info.get("duration", 2) / 2)),
+                            "-i", path, "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "4", t.name])
+            if os.path.getsize(t.name):
+                with open(t.name, "rb") as f:
+                    call("PUT", f"/api/videos/{vid}/thumb", data=f.read(), ctype="image/jpeg")
+
+        up = call("POST", f"/api/videos/{vid}/mpu")["uploadId"]
+        count = max(1, -(-size // PART))
+        sent = [0]
+
+        def send(n):
+            with open(path, "rb") as f:
+                f.seek((n - 1) * PART)
+                chunk = f.read(PART)
+            r = call("PUT", f"/api/videos/{vid}/mpu/{up}/{n}", data=chunk, ctype="application/octet-stream", timeout=300)
+            sent[0] += len(chunk)
+            set_progress(vid, pct=int(sent[0] * 100 / size))
+            return {"partNumber": r["partNumber"], "etag": r["etag"]}
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(PARALLEL) as ex:
+                parts = list(ex.map(send, range(1, count + 1)))
+        except Exception:
+            call("POST", f"/api/videos/{vid}/mpu/{up}/abort")
+            raise
+        if pending:
+            try:
+                transcript = pending.result(timeout=600)
+            except Exception:  # noqa: BLE001 — a transcript is a bonus, never block the video
+                transcript = None
+        doc = load(transcript, {}) if transcript else {}
+        # Hover-preview frames for the progress bar, described in the transcript doc.
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
+            out = tool("art.py", "storyboard", path, t.name)
+            if out and os.path.getsize(t.name):
+                with open(t.name, "rb") as f:
+                    call("PUT", f"/api/videos/{vid}/sprite", data=f.read(), ctype="image/jpeg")
+                doc["storyboard"] = json.loads(out)
+        if doc:
+            call("PUT", f"/api/videos/{vid}/transcript", data=json.dumps(doc, ensure_ascii=False).encode())
+        call("POST", f"/api/videos/{vid}/mpu/{up}/complete",
+             {"parts": parts, "duration": info.get("duration"), "width": info.get("width"),
+              "height": info.get("height"), "codec": info.get("codec")})
+    finally:
+        set_progress(vid, done=True)
+    update(vid, status="ready", file=path, size=size)
+    # The link works from here on; the finishing touches follow without blocking it.
+    try:
+        polish(path, vid, title, doc, info)
+    except Exception as e:  # noqa: BLE001 — polish is optional, the video is already up
+        print(f"vshare: polish skipped: {e}", file=sys.stderr)
+
+
+def default_owner():
+    """The name on share cards when none is set: the account's full name, else its user name."""
+    import pwd
+    p = pwd.getpwuid(os.getuid())
+    return (p.pw_gecos.split(",")[0] or p.pw_name).strip()
+
+
+def polish(path, vid, title, doc, info):
+    """Claude's title, summary and chapters (when the title is still the default),
+    then the branded link-preview card with the final title and the clean-up badge."""
+    if title.startswith(DEFAULT_TITLE) and doc.get("cues"):
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as t:
+            json.dump(doc, t, ensure_ascii=False)
+            t.flush()
+            ai = load(os.path.join(HOME, ".config/gif-record/settings.json"), {}).get("ai", "auto")
+            # "local" = This computer only: titles must never go to the cloud either.
+            engine = {"gpu": "local", "cpu": "local", "local": "local", "cloud": "cloud"}.get(ai, "auto")
+            r = subprocess.run([os.path.join(CLEAN, "run"), os.path.join(CLEAN, "meta.py"), t.name,
+                                str(info.get("duration") or 0), "--engine", engine],
+                               capture_output=True, text=True, timeout=300)
+        meta = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+        if meta.get("title"):
+            title = meta["title"]
+            call("PATCH", f"/api/videos/{vid}", {"title": title, "summary": meta.get("summary", "")})
+            update(vid, title=title)
+        if meta.get("chapters") or meta.get("summary"):
+            doc.update({k: meta[k] for k in ("chapters", "summary") if meta.get(k)})
+            call("PUT", f"/api/videos/{vid}/transcript", data=json.dumps(doc, ensure_ascii=False).encode())
+    owner = load(CONF, {}).get("owner") or default_owner()
+    c = doc.get("cleanup") or {}
+    badge = f"{c['fillers']} um{'' if c['fillers'] == 1 else 's'} removed" if c.get("fillers") else ""
+    with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
+        if tool("art.py", "card", path, t.name, "--title", title, "--meta",
+                f"{owner}  ·  {fmt_dur(info.get('duration'))}", "--badge", badge) is not None and os.path.getsize(t.name):
+            with open(t.name, "rb") as f:
+                call("PUT", f"/api/videos/{vid}/card", data=f.read(), ctype="image/jpeg")
+
+
+# ---------- local index of shares
+
+def remember(entry):
+    idx = load(INDEX, [])
+    idx = [e for e in idx if e.get("id") != entry["id"]]
+    idx.insert(0, entry)
+    dump(INDEX, idx[:200])
+
+
+def update(vid, **kw):
+    idx = load(INDEX, [])
+    for e in idx:
+        if e.get("id") == vid:
+            e.update(kw)
+    dump(INDEX, idx)
+
+
+def entry(vid):
+    return next((e for e in load(INDEX, []) if e.get("id") == vid), None)
+
+
+# ---------- CLI
+
+def opts(args):
+    out, rest = {}, []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            k, _, v = a[2:].partition("=")
+            if not v and i + 1 < len(args):
+                i += 1
+                v = args[i]
+            out[k] = v
+        else:
+            rest.append(a)
+        i += 1
+    return out, rest
+
+
+def default_title(path=None):
+    return "Screen recording · " + time.strftime("%-d %b %H:%M")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 1
+    cmd, (o, rest) = sys.argv[1], opts(sys.argv[2:])
+
+    if cmd == "setup" and rest[:1] == ["cloudflare"] and len(rest) == 3:
+        c = load(CONF, {})
+        c["cloudflare"] = {"url": rest[1].rstrip("/"), "token": rest[2]}
+        dump(CONF, c)
+        os.chmod(CONF, 0o600)
+        print("saved")
+    elif cmd == "create":
+        print(json.dumps(create(o.get("title") or default_title(), o.get("codec"))))
+    elif cmd == "upload" and rest:
+        path = os.path.abspath(rest[0])
+        vid = o.get("id")
+        title = o.get("title") or (entry(vid) or {}).get("title") or default_title(path)
+        if not vid:
+            r = create(title, probe(path).get("codec"))
+            vid = r["id"]
+            subprocess.run(["wl-copy", r["url"]])
+            notify("Share link copied", "Uploading… the link works as soon as it's done")
+        try:
+            upload(path, vid, title, o.get("transcript"))
+        except Exception as e:  # noqa: BLE001 — tell the user, keep the file
+            update(vid, status="failed")
+            notify("Upload failed", str(e)[:200], "-u", "critical")
+            return 1
+        e = entry(vid) or {}
+        notify("Video uploaded", f"{e.get('title', title)}\n{e.get('url', '')}", "-t", "6000")
+    elif cmd == "polish" and rest:
+        vid = rest[0]
+        e = entry(vid) or {}
+        path = e.get("file")
+        if not path or not os.path.exists(path):
+            sys.exit(f"vshare: no local file for {vid}")
+        base, _ = cf()
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{base}/v/{vid}/transcript.json",
+                                        headers={"User-Agent": "vshare/1.0 (+gif-record)"}), timeout=30) as r:
+                doc = json.loads(r.read())
+        except (urllib.error.URLError, json.JSONDecodeError):
+            doc = {}
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
+            out = tool("art.py", "storyboard", path, t.name)
+            if out and os.path.getsize(t.name):
+                with open(t.name, "rb") as f:
+                    call("PUT", f"/api/videos/{vid}/sprite", data=f.read(), ctype="image/jpeg")
+                doc["storyboard"] = json.loads(out)
+                call("PUT", f"/api/videos/{vid}/transcript", data=json.dumps(doc, ensure_ascii=False).encode())
+        polish(path, vid, e.get("title", DEFAULT_TITLE), doc, probe(path))
+        print(json.dumps(entry(vid), ensure_ascii=False))
+    elif cmd == "dashboard":
+        base, token = cf()
+        subprocess.Popen(["xdg-open", f"{base}/dashboard?key={token}"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif cmd == "list":
+        print(json.dumps(load(INDEX, [])[: int(o.get("limit", 20))]))
+    else:
+        print(__doc__)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Open the Voice Tuner: record a sample, tune the mic by ear, save it for gif-record.
+exec python3 "$(dirname "$(readlink -f "$0")")/../tuner/tuner.py" "$@"

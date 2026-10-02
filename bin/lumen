@@ -1,0 +1,31 @@
+#!/bin/bash
+# Lumen: record your screen, your face in a bubble, ums removed, a share link when you stop.
+#
+#   lumen                      start or stop a recording (with the popup's last choices)
+#   lumen record [options]     start one (options: see the top of bin/gif-record)
+#   lumen stop | cancel        stop and save / stop and throw away
+#   lumen open                 open the popup
+#   lumen set KEY VALUE        change a setting (format, target, audio, mic, camera, share, clean, mp4Width, …)
+#   lumen mics                 the microphones it can use, as JSON
+#   lumen share …              share links: create, upload FILE, list, dashboard, polish ID (vshare)
+#   lumen cam …                the face bubble: start, stop, center, hide, show (lumen-cam)
+#   lumen tune                 tune how your mic sounds (voice-tune)
+#   lumen setup [check|ai|cloudflare]   get Lumen ready on this computer (safe to re-run)
+#   lumen uninstall            remove what setup added (never your recordings)
+#
+# The older names (gif-record, vshare, lumen-cam, voice-tune) keep working; this is one front door.
+bin=$(dirname "$(readlink -f "$0")")
+
+case ${1:-toggle} in
+toggle) exec "$bin/gif-record" toggle ;;
+record | start) shift; exec "$bin/gif-record" start "$@" ;;
+stop | cancel | set | mics) exec "$bin/gif-record" "$@" ;;
+open) exec omarchy-shell lumen open ;;
+share) shift; exec "$bin/vshare" "$@" ;;
+cam) shift; [[ ${1:-} == start ]] && shift; exec "$bin/lumen-cam" "$@" ;;
+tune) shift; exec "$bin/voice-tune" "$@" ;;
+setup) shift; exec "$bin/../setup/setup.sh" "$@" ;;
+uninstall) exec "$bin/../setup/setup.sh" uninstall ;;
+-h | --help | help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
+*) echo "lumen: unknown command '$1' (see: lumen help)" >&2; exit 1 ;;
+esac
