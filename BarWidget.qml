@@ -49,6 +49,7 @@ BarWidget {
   readonly property string formatLabel: String(recState.format || format) === "mp4" ? "MP4" : "GIF"
 
   FileView {
+    id: barSettingsFile
     path: Quickshell.env("HOME") + "/.config/gif-record/settings.json"
     watchChanges: true
     printErrors: false
@@ -61,6 +62,7 @@ BarWidget {
   // Share-link uploads in flight, from vshare's progress file.
   property int uploadPct: -1
   FileView {
+    id: barUploadsFile
     path: Quickshell.env("HOME") + "/.cache/vshare/state.json"
     watchChanges: true
     printErrors: false
@@ -113,6 +115,25 @@ BarWidget {
     onFileChanged: reload()
     onLoadFailed: root.recState = { status: "idle" }
   }
+
+  // A FileView never notices a file that didn't exist when it started watching,
+  // and on a fresh install none of these exist until the first recording. So
+  // create them (empty) when the bar loads, then have every watcher re-read.
+  Process {
+    id: ensureFiles
+    command: ["sh", "-c",
+      "mkdir -p \"$HOME/.cache/gif-record\" \"$HOME/.cache/vshare\" \"$HOME/.config/gif-record\"\n" +
+      "[ -e \"$HOME/.cache/gif-record/state.json\" ] || echo '{\"status\":\"idle\"}' > \"$HOME/.cache/gif-record/state.json\"\n" +
+      "[ -e \"$HOME/.cache/vshare/state.json\" ] || echo '{\"uploads\":{}}' > \"$HOME/.cache/vshare/state.json\"\n" +
+      "[ -e \"$HOME/.config/gif-record/settings.json\" ] || echo '{}' > \"$HOME/.config/gif-record/settings.json\""]
+    onExited: {
+      stateFile.reload()
+      barSettingsFile.reload()
+      barUploadsFile.reload()
+      if (panelLoader.item) panelLoader.item.reloadFiles()
+    }
+  }
+  Component.onCompleted: ensureFiles.running = true
 
   // Ticks the elapsed/countdown label, and re-reads the file in case a
   // change notification was missed while something is in flight.

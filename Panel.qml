@@ -183,6 +183,9 @@ Panel {
     onFileChanged: root.refreshMics()
   }
 
+  // The bar calls this once it has created any of these files that were missing.
+  function reloadFiles() { settingsFile.reload(); uploadsFile.reload() }
+
   function choose(key, value) {
     if (key === "target" || key === "format" || key === "audio" || key === "codec" || key === "share" || key === "clean" || key === "camera" || key === "ai") root[key] = value
     else if (key === "width") root.gifWidth = Number(value)
@@ -227,6 +230,7 @@ Panel {
   // ---- Uploads in flight, from vshare's progress file.
   property var uploads: []
   FileView {
+    id: uploadsFile
     path: Quickshell.env("HOME") + "/.cache/vshare/state.json"
     watchChanges: true
     printErrors: false
