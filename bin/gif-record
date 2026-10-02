@@ -169,6 +169,11 @@ start() {
     esac
   done
   target=${target:-$(conf target region)}
+  # A saved screen can be unplugged since (a TV, a dock): record the focused one instead.
+  if [[ $target == monitor:* ]] &&
+    ! hyprctl monitors -j | jq -e --arg n "${target#monitor:}" 'any(.[]; .name == $n)' >/dev/null; then
+    target="monitor:$(hyprctl monitors -j | jq -r '(map(select(.focused)) + .)[0].name')"
+  fi
   format=${format:-$(conf format mp4)}
   fps=${fps:-$(conf fps 15)}
   mp4fps=${mp4fps:-$(conf mp4Fps 30)}

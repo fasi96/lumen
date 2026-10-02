@@ -533,6 +533,9 @@ class Bubble(Gtk.Application):
         self.effect_i = (self.effect_i + 1) % len(EFFECTS)
         save_state(effect=self.effect_i)
 
+    def center_me(self):
+        self.src.center_request = True
+
     def close(self):
         self.closing = True
         self.pop.target[:] = 0.0
@@ -874,13 +877,15 @@ class Bubble(Gtk.Application):
             (self.icon_shape, self.next_shape, f"Shape: {SHAPES[self.shape_i]}"),
             (self.icon_sparkle, self.next_effect, f"Outline: {EFFECTS[self.effect_i].title()}"),
             (self.icon_room, self.next_room, f"Room: {ROOMS[self.room_i][0]}"),
+            (self.icon_center, self.center_me, "Center me"),
             (self.icon_close, self.close, "Close"),
         ]
 
     def draw_toolbar(self, cr, poly, cx, t):
         a = float(self.hover.x[0])
         self.buttons, self.toolbar_box = [], None
-        if a < 0.02 or self.mode == "drag" or self.recording:
+        # Shown during recordings too: it only appears while the pointer is on the bubble.
+        if a < 0.02 or self.mode == "drag":
             return
         tools = self.tools()
         n, r = len(tools), 12
@@ -946,6 +951,17 @@ class Bubble(Gtk.Application):
         cr.stroke()
         cr.set_source_rgba(1, 1, 1, 0.95)
         cr.arc(0, 0, (3.2, 5.0, 7.5)[self.size_i], 0, 2 * math.pi)
+        cr.fill()
+
+    def icon_center(self, cr):
+        # A crosshair: a ring with four ticks pointing in at the middle.
+        cr.arc(0, 0, 5, 0, 2 * math.pi)
+        cr.stroke()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            cr.move_to(dx * 9, dy * 9)
+            cr.line_to(dx * 6.5, dy * 6.5)
+        cr.stroke()
+        cr.arc(0, 0, 1.2, 0, 2 * math.pi)
         cr.fill()
 
     def icon_room(self, cr):
