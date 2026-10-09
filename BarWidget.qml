@@ -80,7 +80,7 @@ BarWidget {
     if (status === "recording") return "● " + clock(nowMs - Number(recState.since || nowMs))
     if (status === "countdown") return "● " + Math.max(1, Math.ceil((Number(recState.until || nowMs) - nowMs) / 1000))
     if (status === "converting") return Number(recState.progress || 0) + "%"
-    if (status === "picking") return "…"
+    if (status === "picking" || status === "starting") return "…"
     if (uploadPct >= 0) return "↑ " + uploadPct + "%"
     return " "        // idle: the ✦ is drawn as a shape (see below), not text
   }
@@ -92,11 +92,13 @@ BarWidget {
     if (status === "countdown") return "Starting soon — click to cancel"
     if (status === "converting") return formatLabel === "MP4" ? "Saving the video…" : "Making the GIF…"
     if (status === "picking") return "Pick an area or window"
+    if (status === "starting") return "Starting…"
     if (uploadPct >= 0) return "Uploading your share link's video"
     return "Lumen"
   }
 
-  function run(args) { Util.execArgv(["gif-record"].concat(args)) }
+  readonly property string home: String(Qt.resolvedUrl(".")).replace("file://", "").replace(/\/$/, "")
+  function run(args) { Util.execArgv([root.home + "/bin/gif-record"].concat(args)) }
 
   function clicked(b) {
     if (status === "recording" || status === "countdown") {
@@ -122,7 +124,7 @@ BarWidget {
   Process {
     id: ensureFiles
     command: ["sh", "-c",
-      "mkdir -p \"$HOME/.cache/gif-record\" \"$HOME/.cache/vshare\" \"$HOME/.config/gif-record\"\n" +
+      "umask 077; mkdir -p \"$HOME/.cache/gif-record\" \"$HOME/.cache/vshare\" \"$HOME/.config/gif-record\"\n" +
       "[ -e \"$HOME/.cache/gif-record/state.json\" ] || echo '{\"status\":\"idle\"}' > \"$HOME/.cache/gif-record/state.json\"\n" +
       "[ -e \"$HOME/.cache/vshare/state.json\" ] || echo '{\"uploads\":{}}' > \"$HOME/.cache/vshare/state.json\"\n" +
       "[ -e \"$HOME/.config/gif-record/settings.json\" ] || echo '{}' > \"$HOME/.config/gif-record/settings.json\""]

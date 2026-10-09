@@ -113,6 +113,15 @@
   </footer>
 
 <script>
+// The per-run token arrives in the URL fragment from the private launch page; keep it
+// for this window only and send it with every request.
+const TOKEN = (() => {
+  const m = location.hash.match(/t=([\w-]+)/)
+  if (m) { sessionStorage.setItem("t", m[1]); history.replaceState(null, "", location.pathname) }
+  return sessionStorage.getItem("t") || ""
+})()
+const api = (path, opts = {}) => fetch(path, { ...opts, headers: { ...(opts.headers || {}), "X-Tuner-Token": TOKEN } })
+
 const $ = id => document.getElementById(id)
 let META = {}, PRESETS = {}, saved = null, params = {}, presetName = "", warmup = 1
 let PROFILES = {}, FALLBACK = null, SAMPLES = {}, MICS = [], sysDefault = "", mic = ""
@@ -120,7 +129,7 @@ let hasSample = false
 
 // ---------- boot
 async function boot() {
-  const s = await (await fetch("/state")).json()
+  const s = await (await api("/state")).json()
   const t = s.theme || {}
   const css = document.documentElement.style
   if (t.background) css.setProperty("--bg", t.background)
@@ -238,7 +247,7 @@ function updateStatus(msg) {
 $("revert").onclick = () => { params = { ...saved.params }; presetName = saved.preset; syncUI(); changed() }
 $("save").onclick = async () => {
   const body = { params, preset: presetName, mic, label: micLabel(mic) }
-  const r = await fetch("/save", { method: "POST", body: JSON.stringify(body) })
+  const r = await api("/save", { method: "POST", body: JSON.stringify(body) })
   if (!r.ok) return updateStatus("Couldn't save")
   saved = PROFILES[mic] = { preset: presetName, params: { ...params } }
   buildMics(); syncUI(); updateStatus(`Saved: ${micLabel(mic)} records with ${presetName}`)
@@ -249,7 +258,7 @@ let recTimer = null
 $("rec").onclick = async () => {
   if (recTimer) return stopRec()
   stopPlayback()
-  await fetch("/record", { method: "POST", body: JSON.stringify({ mic }) })
+  await api("/record", { method: "POST", body: JSON.stringify({ mic }) })
   $("rec").classList.add("on"); $("rec").textContent = "■ Stop"
   recTimer = setInterval(pollLevel, 100)
 }
@@ -257,14 +266,14 @@ $("rec").onclick = async () => {
 async function stopRec() {
   clearInterval(recTimer); recTimer = null
   $("rec").classList.remove("on"); $("rec").textContent = "● Record"
-  const r = await (await fetch("/stop", { method: "POST", body: "{}" })).json()
+  const r = await (await api("/stop", { method: "POST", body: "{}" })).json()
   resetMeter()
   if (r.error && !r.sample) return note(r.error, true)
   setSample(r.sample, true)
 }
 
 async function pollLevel() {
-  const l = await (await fetch("/level")).json()
+  const l = await (await api("/level")).json()
   if (!l.recording) {           // hit the 30 s limit on its own
     clearInterval(recTimer); recTimer = null
     $("rec").classList.remove("on"); $("rec").textContent = "● Record"
@@ -364,7 +373,7 @@ $("wave").onclick = e => {
 }
 
 async function fetchAudio(path) {
-  const r = await fetch(path, { method: "POST", body: JSON.stringify({ params, mic }) })
+  const r = await api(path, { method: "POST", body: JSON.stringify({ params, mic }) })
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status)
   return ctx.decodeAudioData(await r.arrayBuffer())
 }

@@ -23,12 +23,17 @@
 # mic is "default" (follow the system's input) or a PipeWire source name. Each mic
 # has its own voice profile in ~/.config/gif-record/voice.json, tuned with voice-tune.
 #
-# The bar widget (Lumen's bar/, the "lumen" Omarchy plugin) drives this and watches
+# The bar widget (Lumen's bar/, the io.github.fasi96.lumen Omarchy plugin) drives this and watches
 # ~/.cache/gif-record/state.json. Settings persist in ~/.config/gif-record/settings.json,
 # so the keybinding records whatever the panel was last set to.
 
 # Where Lumen is installed: this script lives in its bin/ (usually via a symlink).
 LUMEN_HOME="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+# Sibling tools by path, so nothing needs to be on PATH (the popup works before any setup).
+CAM="$LUMEN_HOME/bin/lumen-cam"
+VSHARE="$LUMEN_HOME/bin/vshare"
+# Everything Lumen writes (recordings in progress, transcripts, settings) is private.
+umask 077
 CONF_DIR="$HOME/.config/gif-record"
 CONF="$CONF_DIR/settings.json"
 STATE_DIR="$HOME/.cache/gif-record"
@@ -36,6 +41,11 @@ STATE="$STATE_DIR/state.json"
 CANCEL="$STATE_DIR/cancel"
 LOG="$STATE_DIR/log"
 mkdir -p "$CONF_DIR" "$STATE_DIR"
+# Folders made by older versions (or another tool's umask) get tightened once.
+for d in "$CONF_DIR" "$STATE_DIR" "$HOME/.local/share/vshare" "$HOME/.cache/vshare" "$HOME/.config/vshare" \
+  "$HOME/.cache/voice-tuner" "$HOME/.config/lumen" "$HOME/.local/share/lumen"; do
+  [[ -d $d && -O $d ]] && chmod 700 "$d" 2>/dev/null
+done
 
 [[ -f ~/.config/user-dirs.dirs ]] && source ~/.config/user-dirs.dirs
 OUT_DIR="${GIF_RECORD_DIR:-${XDG_VIDEOS_DIR:-$HOME/Videos}/GIFs}"
@@ -54,13 +64,14 @@ write_state() {
 }
 
 set_conf() {
-  local key=$1 val=$2
+  local key=$1 val=$2 tmp
   [[ -f $CONF ]] || echo '{}' >"$CONF"
+  tmp=$(mktemp "$CONF.XXXXXX") || return 1
   if [[ $val =~ ^[0-9]+$ ]]; then
-    jq --arg k "$key" --argjson v "$val" '.[$k] = $v' "$CONF" >"$CONF.tmp"
+    jq --arg k "$key" --argjson v "$val" '.[$k] = $v' "$CONF" >"$tmp"
   else
-    jq --arg k "$key" --arg v "$val" '.[$k] = $v' "$CONF" >"$CONF.tmp"
-  fi && mv "$CONF.tmp" "$CONF"
+    jq --arg k "$key" --arg v "$val" '.[$k] = $v' "$CONF" >"$tmp"
+  fi && mv "$tmp" "$CONF" || rm -f "$tmp"
 }
 
 alive() { [[ -n $1 ]] && kill -0 "$1" 2>/dev/null; }
@@ -80,7 +91,7 @@ recorder_problem() {
 # Fail loudly: a notification that stays until dismissed, saying why and where the details are.
 fail_to_start() {
   write_state idle
-  camera_on && lumen-cam show 2>/dev/null
+  "$CAM" stop 2>/dev/null
   notify -u critical "Lumen couldn't start recording" "$1. Details: ~/.cache/gif-record/log"
   exit 1
 }
@@ -88,15 +99,16 @@ fail_to_start() {
 # ---- The camera bubble (lumen-cam). It's an overlay on screen, so the recording
 # picks it up like any other pixel; all the recorder does is keep it out of the
 # way while you pick an area, then make sure it's inside that area.
-camera_on() { [[ $(conf camera off) == on ]]; }
+# On, and there's a webcam to show (no point in an empty "No camera" bubble).
+camera_on() { [[ $(conf camera off) == on ]] && compgen -G "/dev/video*" >/dev/null; }
 ensure_cam() {
-  lumen-cam ping && return 0
-  setsid -f lumen-cam >/dev/null 2>&1 </dev/null
-  for _ in $(seq 60); do sleep 0.2; lumen-cam ping && return 0; done
+  "$CAM" ping && return 0
+  setsid -f "$CAM" >/dev/null 2>&1 </dev/null
+  for _ in $(seq 60); do sleep 0.2; "$CAM" ping && return 0; done
   return 1
 }
 # cam_place X Y W H — inside this area, then fade back in
-cam_place() { camera_on || return 0; lumen-cam place "$@"; lumen-cam show; }
+cam_place() { camera_on || return 0; "$CAM" place "$@"; "$CAM" show; }
 
 VOICE="$CONF_DIR/voice.json"
 
@@ -112,7 +124,14 @@ resolve_mic() {
 
 # Voice chain for a mic: its own profile, else the untuned fallback (Natural).
 voice_filter() {
-  jq -r --arg m "$1" '.profiles[$m].filter // .fallback.filter // .filter // empty' "$VOICE" 2>/dev/null
+  local f
+  f=$(jq -r --arg m "$1" '.profiles[$m].filter // .fallback.filter // .filter // empty' "$VOICE" 2>/dev/null)
+  # A saved chain can name an RNNoise model that isn't on this computer; ffmpeg would
+  # fail on it, so drop that one step rather than the recording.
+  if [[ $f =~ arnndn=m=([^:,]+) ]] && [[ ! -f ${BASH_REMATCH[1]} ]]; then
+    f=$(sed -E 's/arnndn=m=[^,]*,?//; s/,$//' <<<"$f")
+  fi
+  printf '%s\n' "$f"
 }
 
 list_mics() {
@@ -136,7 +155,7 @@ current_status() {
   s=$(state status)
   pid=$(state pid)
   case $s in
-  picking | recording | countdown | converting) alive "$pid" && echo "$s" || echo idle ;;
+  starting | picking | recording | countdown | converting) alive "$pid" && echo "$s" || echo idle ;;
   *) echo idle ;;
   esac
 }
@@ -152,6 +171,7 @@ start() {
   fi
 
   [[ $(current_status) == idle ]] || exit 0
+  write_state starting "{\"pid\": $$}"
 
   local format target fps mp4fps width delay audio codec share clean
   for arg in "$@"; do
@@ -191,7 +211,11 @@ start() {
   # Shared links must play on any phone: AV1 doesn't on older iPhones.
   [[ $share != off && $codec == smallest ]] && codec=compatible
   delay=${delay:-$(conf delay 0)}
-  audio=${audio:-$(conf audio none)}
+  # Not chosen yet (no setup any more): the mic, if this computer has one.
+  if [[ -z $audio ]]; then
+    audio=$(conf audio "")
+    [[ -n $audio ]] || { pactl list short sources 2>/dev/null | grep -vq monitor && audio=mic || audio=none; }
+  fi
 
   # capture = gpu-screen-recorder's -w; backup = the same area for wf-recorder.
   local capture=() backup=() label geo
@@ -209,10 +233,10 @@ start() {
   window | region)
     rm -f "$CANCEL"
     write_state picking "{\"pid\": $$}"
-    camera_on && { ensure_cam; lumen-cam hide; }
+    camera_on && { ensure_cam; "$CAM" hide; }
     geo=$(omarchy-capture-region "$([[ $target == window ]] && echo windows || echo region)")
     if [[ ! $geo =~ ^(-?[0-9]+),(-?[0-9]+)[[:space:]]([0-9]+)x([0-9]+)$ ]]; then
-      camera_on && lumen-cam show
+      "$CAM" stop 2>/dev/null
       write_state idle
       exit 0
     fi
@@ -222,7 +246,7 @@ start() {
     cam_place "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
     ;;
   *)
-    notify -u critical "Lumen" "Unknown target: $target"
+    notify -t 15000 "Lumen" "Unknown target: $target"
     exit 1
     ;;
   esac
@@ -232,7 +256,7 @@ start() {
     local until=$(($(date +%s%3N) + delay * 1000))
     write_state countdown "{\"pid\": $$, \"until\": $until, \"label\": \"$label\"}"
     while (($(date +%s%3N) < until)); do
-      [[ -f $CANCEL ]] && { rm -f "$CANCEL"; write_state idle; exit 0; }
+      [[ -f $CANCEL ]] && { rm -f "$CANCEL"; "$CAM" stop 2>/dev/null; write_state idle; exit 0; }
       sleep 0.1
     done
   fi
@@ -265,7 +289,7 @@ start() {
     cat "$err" >>"$LOG"
     why=$(recorder_problem "$err")
     rm -f "$mp4"
-    command -v wf-recorder >/dev/null || fail_to_start "$why, and the backup recorder (wf-recorder) isn't installed: run 'lumen setup'"
+    command -v wf-recorder >/dev/null || fail_to_start "$why, and the backup recorder (wf-recorder) isn't installed: run 'lumen setup recorder'"
     local wsound=()
     [[ $format == mp4 && $audio != none ]] && wsound=(--audio="$mic" -C aac)
     [[ $format == mp4 && $audio == both ]] && note=" Only your mic is recorded with it, not desktop sound."
@@ -286,6 +310,8 @@ start() {
 
   # However the recorder ends (our stop, Alt+Print, the indicator), we convert.
   wait $pid
+  # The bubble was for the recording; it closes with it (and frees the webcam).
+  "$CAM" stop 2>/dev/null
   cat "$err" >>"$LOG" 2>/dev/null
   refresh_indicators
   local duration_ms=$(($(date +%s%3N) - since))
@@ -302,12 +328,12 @@ start() {
     local share_id=""
     if [[ $share == cloudflare ]]; then
       local link
-      if link=$(vshare create --codec h264 2>>"$LOG"); then
+      if link=$("$VSHARE" create --codec h264 2>>"$LOG"); then
         share_id=$(jq -r .id <<<"$link")
         wl-copy "$(jq -r .url <<<"$link")"
         notify -t 4000 "Share link copied" "Paste it anywhere — the video appears once it's uploaded"
       else
-        notify -u critical "Couldn't create a share link" "Saving the recording locally only"
+        notify -t 15000 "Couldn't create a share link" "Saving the recording locally only"
       fi
     fi
     finish_mp4 "$mp4" "$width" "$duration_ms" "$mic" "$codec" "$share_id" "$clean"
@@ -404,7 +430,7 @@ convert() {
     local kept="$OUT_DIR/$(basename "${gif%.gif}").mp4"
     mv "$mp4" "$kept"
     write_state idle
-    notify -u critical "GIF conversion failed" "Kept the recording: $kept"
+    notify -t 15000 "GIF conversion failed" "Kept the recording: $kept"
   fi
 }
 
@@ -478,7 +504,7 @@ finish_mp4() {
   else
     rm -f "$out"
     mv "$src" "$out"
-    notify -u critical "Couldn't compress the recording" "Saved the original instead"
+    notify -t 15000 "Couldn't compress the recording" "Saved the original instead"
     clean=off
   fi
 
@@ -494,7 +520,7 @@ finish_mp4() {
   # Shared: the link is already on the clipboard; upload in the background so the
   # recorder is free again straight away. vshare reports progress and the result.
   if [[ -n $share_id ]]; then
-    setsid -f vshare upload "$out" --id "$share_id" ${transcript:+--transcript "$transcript"} </dev/null >>"$LOG" 2>&1
+    setsid -f "$VSHARE" upload "$out" --id "$share_id" ${transcript:+--transcript "$transcript"} </dev/null >>"$LOG" 2>&1
     return
   fi
   wl-copy --type text/uri-list "file://$out"
@@ -534,7 +560,7 @@ clean_mp4() {
   fi
   mv "$mixed" "$out"
   rm -rf "$dir"
-  notify -u critical "Couldn't clean up the recording" "Saved it uncut instead"
+  notify -t 15000 "Couldn't clean up the recording" "Saved it uncut instead"
   return 1
 }
 
@@ -565,10 +591,16 @@ cancel) cancel ;;
 set)
   set_conf "$2" "$3"
   if [[ $2 == camera ]]; then
-    if [[ $3 == on ]]; then (ensure_cam &) >/dev/null 2>&1; else lumen-cam stop; fi
+    if [[ $3 == on ]]; then (ensure_cam &) >/dev/null 2>&1; else "$CAM" stop; fi
   fi
   ;;
 mics) list_mics ;;
+cam-preview) camera_on && ensure_cam >/dev/null 2>&1 ;;
+cam-idle)
+  # The popup closed: unless a recording is starting, the bubble goes too.
+  sleep 2
+  [[ $(current_status) == idle ]] && "$CAM" stop 2>/dev/null
+  ;;
 toggle)
   case $(current_status) in
   idle) start ;;

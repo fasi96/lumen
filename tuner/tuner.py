@@ -13,6 +13,7 @@ quits when the window closes.
 """
 
 import json
+import sys
 import os
 import re
 import signal
@@ -20,6 +21,11 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import tempfile
+import hmac
+import secrets
+
+os.umask(0o077)   # mic samples and voice settings are private
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -30,7 +36,10 @@ CACHE = os.path.join(HOME, ".cache/voice-tuner")
 SAMPLES = os.path.join(CACHE, "samples")
 MODEL = os.path.join(HOME, ".local/share/voice-models/std.rnnn")
 THEME_COLORS = os.path.join(HOME, ".local/state/omarchy/current/theme/colors.toml")
-PORT = 47614
+PORT = 0          # set at start: a random free port
+# Per-run secret: every request but the page itself must carry it (X-Tuner-Token), so no
+# other local user or web page can record the mic, fetch samples or rewrite settings.
+TOKEN = secrets.token_urlsafe(32)
 TITLE = "Lumen · Voice"
 MAX_SECONDS = 30
 WARMUP = 1.0
@@ -75,7 +84,8 @@ def voice_filter(p):
         f.append(f"volume={p['gain']}dB")
     # Always at least 20 Hz: the mic waking from standby leaves a DC offset.
     f.append(f"highpass=f={max(p['rumble'], 20):g}:poles=2")
-    if p["denoise"] > 0:
+    # RNNoise needs its model file; without it the chain must not mention it (ffmpeg would fail).
+    if p["denoise"] > 0 and os.path.exists(MODEL):
         f.append(f"arnndn=m={MODEL}:mix={p['denoise'] / 100:.2f}")
     if p["warmth"]:
         f.append(f"equalizer=f=150:t=q:w=0.8:g={p['warmth']:g}")
@@ -276,9 +286,10 @@ def save(body):
                           "preset": str(body.get("preset") or "Custom")[:40],
                           "params": p, "filter": voice_filter(p)}
     os.makedirs(CONF_DIR, exist_ok=True)
-    with open(VOICE_FILE + ".tmp", "w") as f:
+    fd, tmp = tempfile.mkstemp(dir=CONF_DIR, prefix=".voice.json.")
+    with os.fdopen(fd, "w") as f:
         json.dump(v, f, indent=2)
-    os.replace(VOICE_FILE + ".tmp", VOICE_FILE)
+    os.replace(tmp, VOICE_FILE)
 
 
 def theme():
@@ -308,7 +319,18 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def allowed(self, needs_token=True):
+        """Only this run's window: the right Host (no DNS rebinding) and, for everything
+        except the static page, the per-run token."""
+        if self.headers.get("Host") != f"127.0.0.1:{PORT}":
+            return False
+        if self.headers.get("Origin") not in (None, f"http://127.0.0.1:{PORT}"):
+            return False
+        return not needs_token or hmac.compare_digest(self.headers.get("X-Tuner-Token", ""), TOKEN)
+
     def do_GET(self):
+        if not self.allowed(needs_token=self.path != "/"):
+            return self.send(403, "{}")
         if self.path == "/":
             with open(os.path.join(HERE, "tuner.html"), "rb") as f:
                 self.send(200, f.read(), "text/html; charset=utf-8")
@@ -333,7 +355,7 @@ class H(BaseHTTPRequestHandler):
             self.send(404, "{}")
 
     def do_POST(self):
-        if self.headers.get("Origin") not in (None, f"http://127.0.0.1:{PORT}"):
+        if not self.allowed():
             return self.send(403, "{}")
         n = int(self.headers.get("Content-Length") or 0)
         try:
@@ -395,14 +417,32 @@ def float_center(addr, w, h):
     dsp(f"hl.dsp.window.move({{ x = {x}, y = {y}, {sel} }})")
 
 
+def launch_page():
+    """A private one-shot page (0600 in XDG_RUNTIME_DIR) that hands the token to the
+    window through the URL fragment, so the token is never on a command line."""
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if not run or not os.path.isdir(run):
+        sys.exit("voice-tune: XDG_RUNTIME_DIR isn't set")
+    fd, path = tempfile.mkstemp(dir=run, prefix="lumen-tuner-", suffix=".html")
+    with os.fdopen(fd, "w") as f:
+        f.write(f'<!doctype html><meta charset="utf-8"><title>{TITLE}</title>'
+                f'<script>location.replace("http://127.0.0.1:{PORT}/#t={TOKEN}")</script>')
+    return path
+
+
 def open_window():
+    page = launch_page()
     subprocess.Popen(
         ["uwsm-app", "--", "chromium", f"--user-data-dir={HOME}/.cache/voice-tuner/chromium", "--no-first-run",
          "--ozone-platform=wayland", "--autoplay-policy=no-user-gesture-required",
-         f"--app=http://127.0.0.1:{PORT}/"],
+         f"--app=file://{page}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     c = wait_title(TITLE, 15)
+    try:
+        os.unlink(page)
+    except OSError:
+        pass
     if not c:
         return
     addr = c["address"]
@@ -418,7 +458,9 @@ def main():
         if c.get("title") == TITLE:
             dsp(f'hl.dsp.focus({{ window = "address:{c["address"]}" }})')
             return
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    global PORT
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    PORT = srv.server_address[1]
     threading.Thread(target=open_window, daemon=True).start()
     srv.serve_forever()
 

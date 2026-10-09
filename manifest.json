@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "lumen",
-  "name": "Lumen",
-  "version": "1.0.0",
+  "id": "io.github.fasi96.lumen",
+  "name": "Lumen Recorder",
+  "version": "1.1.0",
   "author": "fasi96",
-  "description": "Lumen: record your screen (MP4 or GIF), your face in a bubble, ums removed, a share link the moment you stop",
+  "description": "Loom-style screen recorder in your bar: area, window or screen, with your mic. Optional add-ons, installed only when you switch them on (they ask first, and may ask for your password): remove ums and long pauses with a speech AI, a face bubble, and share links on your own Cloudflare account. Remove with `lumen uninstall` before `omarchy plugin remove io.github.fasi96.lumen`.",
   "kinds": [
     "bar-widget"
   ],
@@ -12,10 +12,11 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Lumen",
+    "displayName": "Lumen Recorder",
     "description": "Record the screen, share a link",
     "category": "Capture",
     "allowMultiple": false,
     "defaultSection": "right"
-  }
+  },
+  "license": "MIT"
 }

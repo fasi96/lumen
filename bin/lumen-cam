@@ -7,8 +7,10 @@
 #   lumen-cam center          centre the (still) camera view on you, once
 #   lumen-cam place X Y W H   make sure it's inside this area (global coords): moves monitor/corner if needed
 here=$(dirname "$(readlink -f "$0")")/../cam
-pidf="${XDG_RUNTIME_DIR:-/tmp}/lumen-cam.pid"
-sock="${XDG_RUNTIME_DIR:-/tmp}/lumen-cam.sock"
+# Its pid file and control socket live in the private per-user runtime folder, never /tmp.
+[[ -n ${XDG_RUNTIME_DIR:-} && -d $XDG_RUNTIME_DIR ]] || { echo "lumen-cam: XDG_RUNTIME_DIR isn't set" >&2; exit 1; }
+pidf="$XDG_RUNTIME_DIR/lumen-cam.pid"
+sock="$XDG_RUNTIME_DIR/lumen-cam.sock"
 
 send() {
   python3 - "$sock" "$*" <<'PY'
@@ -23,7 +25,17 @@ except OSError:
     sys.exit(1)
 PY
 }
-stop() { [[ -f $pidf ]] && kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; }
+# Only ever stops the bubble: the pid must still belong to a lumen_cam.py process.
+stop() {
+  local pid
+  pid=$(cat "$pidf" 2>/dev/null)
+  if [[ $pid =~ ^[0-9]+$ ]] && tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" | grep -q "lumen_cam.py"; then
+    kill "$pid" 2>/dev/null
+  fi
+  # `uv run` hands over to python: the bubble itself may have a different pid.
+  send quit >/dev/null 2>&1
+  rm -f "$pidf"
+}
 
 case $1 in
 stop) stop; exit 0 ;;
@@ -35,4 +47,4 @@ esac
 stop
 echo $$ >"$pidf"
 # Layer shell has to be loaded before Wayland.
-LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec uv run -q --project "$here" --script "$here/lumen_cam.py" "$@"
+LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec uv run -q --locked --project "$here" --script "$here/lumen_cam.py" "$@"

@@ -10,7 +10,7 @@ How the code is laid out and where things live. For using Lumen, see the [README
 | `bin/gif-record` | The recorder itself: start/stop/set, audio mix, clean-up, hands off to vshare | `~/.local/bin/gif-record` |
 | `bin/vshare` | Share-link client: creates the link, uploads, transcripts, titles | `~/.local/bin/vshare` |
 | `bin/voice-tune` | Launches the voice tuner | `~/.local/bin/voice-tune` |
-| `*.qml`, `manifest.json` | Top-bar widget + popup (Quickshell QML, plugin id `lumen`), at the repo root so `omarchy plugin add` works | `~/.config/omarchy/plugins/lumen` |
+| `*.qml`, `manifest.json` | Top-bar widget + popup (Quickshell QML, plugin id `io.github.fasi96.lumen`), at the repo root so `omarchy plugin add` works | `~/.config/omarchy/plugins/io.github.fasi96.lumen` |
 | `setup/` | `lumen setup` / `lumen uninstall`, and the three speech-AI install profiles | — |
 | `tuner/` | Voice tuner window (python server on :47614 + chromium app) | — |
 | `share/` | Cloudflare worker: share page, player, dashboard, R2 + D1, Workers AI | — |

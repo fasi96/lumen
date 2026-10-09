@@ -50,26 +50,29 @@ You need [Omarchy](https://omarchy.org) 4.
 omarchy plugin add https://github.com/fasi96/lumen --enable
 ```
 
-Then click the **✦** in the bar → **Set up Lumen**. Setup takes about 3 minutes:
+That's it: click the **✦** in the bar and **Start recording**. Recording needs nothing else; everything it uses ships with Omarchy, and no account is needed.
 
-1. Installs anything missing (it asks for your password once).
-2. Asks **where videos go**: your own Cloudflare account (share links) or just this computer.
-3. Asks **where the speech AI runs**: automatic, this computer only, or off.
-4. Your name for share pages, and whether to turn on the face bubble.
-5. Adds the shortcut **Shift+Alt+Print** (start / stop), unless those keys are already taken.
-6. Checks your mic.
+### Add-ons (optional)
 
-Run it again any time: `lumen setup`, or **Settings → Setup & accounts…** in the popup.
+Switch any of these on in the popup and Lumen installs what that one needs, the first time (a small terminal opens, says what it will install and asks first):
+
+| Add-on | What it installs |
+|---|---|
+| **Remove ums & pauses** | A speech AI: `uv` (if missing) and its Python packages, plus a 1.6 GB speech model. About 2 GB, or 4 GB with an NVIDIA card. Or ~80 MB if it runs on your Cloudflare. |
+| **Face bubble (beta)** | The camera AI's Python packages (about 0.5 GB) |
+| **Share links** | A share site in **your own** Cloudflare account; `nodejs` and `npm` to publish it |
+
+`lumen setup` shows the same list as a checklist, plus two more: the **Shift+Alt+Print** shortcut (also one click in **Settings**) and terminal commands in `~/.local/bin`.
 
 ### Share links need a (free) Cloudflare account
 
-If you pick "My Cloudflare", setup creates everything in **your** account: storage for the videos (R2), a small database, and the share site. It walks you through signing in. Cloudflare's free tier covers 10 GB of videos and about 214 minutes a day of speech AI. Cloudflare needs a card or PayPal on file before it turns storage on, even for the free tier. Lumen's author has no access to your account or your videos.
+When you switch share links on, setup creates everything in **your** account: storage for the videos (R2), a small database, and the share site. It walks you through signing in. Cloudflare's free tier covers 10 GB of videos and about 214 minutes a day of speech AI. Cloudflare needs a card or PayPal on file before it turns storage on, even for the free tier. Lumen's author has no access to your account or your videos.
 
 ## Use it
 
 | | |
 |---|---|
-| **Record** | Click ✦ → **Start recording**, or press **Shift+Alt+Print** |
+| **Record** | Click ✦ → **Start recording** (or **Shift+Alt+Print**, once you've added the shortcut) |
 | **Stop** | Click the red timer in the bar, or press the shortcut again |
 | **Your last recording** | At the bottom of the popup: open, copy, share, show in folder |
 | **Shared videos** | Settings → **Shared videos…** (rename, password, delete, views) |
@@ -87,7 +90,7 @@ From a terminal, `lumen help` lists everything: `lumen record`, `lumen stop`, `l
 
 ## Known limitations
 
-- **Graphics:** the main recorder needs Intel, AMD or NVIDIA graphics. Elsewhere (for example in a virtual machine), Lumen switches to a backup recorder automatically. The backup records your mic but **not desktop sound**.
+- **Graphics:** the main recorder needs Intel, AMD or NVIDIA graphics. Elsewhere (for example in a virtual machine), Lumen switches to a backup recorder automatically once it's installed (`lumen setup recorder`; Lumen tells you if it's needed). The backup records your mic but **not desktop sound**.
 - **Um removal without an NVIDIA card** runs on Cloudflare or your processor. On the processor it took about **3× longer** than on an NVIDIA card in our test, with the same result.
 - **The face bubble is in beta.** It uses roughly one processor core while it's open.
 - **Two people far apart** in the face bubble each show as half a person.
@@ -99,7 +102,25 @@ From a terminal, `lumen help` lists everything: `lumen record`, `lumen stop`, `l
 lumen uninstall
 ```
 
-This removes the commands, the speech AI and its model, the shortcut and the bar plugin, and, if you say yes, your Lumen settings. **Your recordings are never touched.** Your Cloudflare share site stays unless you choose to delete it too.
+Run it **before** `omarchy plugin remove io.github.fasi96.lumen` (if you already removed the plugin, run `~/.local/share/lumen/uninstaller/setup.sh uninstall`). It removes exactly what setup added, using the record setup keeps in `~/.config/lumen/installed.json`:
+
+- the speech AI and, if Lumen downloaded it, the speech model;
+- the shortcut block in your Hyprland bindings (left alone if you've edited it);
+- the terminal commands it linked (never ones that were yours);
+- Lumen's working files, and, if you say yes, your settings and your list of shared videos;
+- the bar plugin.
+
+**Your recordings are never touched**; unfinished ones from a crash are moved to `~/Videos/Lumen leftovers`. Your Cloudflare share site stays unless you choose to delete it too. Shared tools are left as they are: uv's Python and package cache (`uv cache clean`) and wrangler's Cloudflare sign-in (`wrangler logout`).
+
+## What it uses
+
+Recording uses only what Omarchy ships: `gpu-screen-recorder`, `ffmpeg`, `slurp`, `jq`, `wl-clipboard`, `pactl` (libpulse), `gum`, `chromium` (the mic tuner's window). Everything below is installed only when you switch the add-on on, and only after you say yes:
+
+- **Arch packages** (with `sudo pacman -S --needed`, which asks for your password): `uv` (speech AI, face bubble), `gtk4-layer-shell` and `python-gobject` (face bubble; Omarchy usually has them), `nodejs` and `npm` (share links), `wf-recorder` (backup recorder for graphics the main one can't use: `lumen setup recorder`).
+- **Python packages**, exact versions with checked hashes: `setup/requirements-*.lock` (speech AI, in `~/.local/share/lumen/venv`) and `cam/lumen_cam.py.lock` (face bubble, in uv's cache). uv downloads its own copy of Python 3.12 if your system doesn't have it.
+- **The speech model**: [faster-whisper large-v3-turbo](https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo) at a pinned revision, 1.6 GB, from Hugging Face.
+- **The face bubble's models**: two MediaPipe models, bundled (see `cam/models/NOTICE.md`).
+- **Share links**: `wrangler` (Cloudflare's CLI, exact version from `share/package-lock.json`, installed with `npm ci`). In your Cloudflare account it creates a Worker, an R2 bucket and a D1 database, sets two secrets (`ADMIN_TOKEN`, `PASSWORD_SALT`), and uses Workers AI when the speech AI runs on Cloudflare.
 
 ## Contributing
 

@@ -5,7 +5,8 @@ import qs.Commons
 import qs.Ui
 
 // Lumen's popup, in two tabs. Record: what to capture, four switches (mic, face
-// bubble, remove ums, share link) and Start. Settings: the technical choices
+// bubble, remove ums, share link) and Start. Recording needs no setup; the three
+// add-on switches install what they need the first time they're switched on. Settings: the technical choices
 // (format, smoothness, sound, size, compression, delay). Choices are saved through
 // `gif-record set`, so Shift+Alt+Print records with whatever was picked here last.
 Panel {
@@ -37,41 +38,38 @@ Panel {
   // ---- Popup-only state
   property string tab: "record"
 
-  // ---- First run: until `lumen setup` has finished, Record shows a welcome instead.
+  // ---- Where Lumen lives; every tool is called by path, so nothing needs to be on PATH.
   readonly property string home: String(Qt.resolvedUrl(".")).replace("file://", "").replace(/\/$/, "")
-  property bool setupDone: true
-  onSetupDoneChanged: if (setupDone) settingsFile.reload()
-  Timer {
-    // Setup writes setup.json (and settings.json) after the bar has loaded, and a
-    // watch on a file that didn't exist yet never fires. Check cheaply whether it
-    // exists yet, and only then reload the FileView (once), rather than recreating
-    // its watcher every tick.
-    interval: 1500
-    repeat: true
-    running: !root.setupDone
-    onTriggered: if (!setupProbe.running) setupProbe.running = true
-  }
+  readonly property string gr: home + "/bin/gif-record"
+  function gifRecord(args) { Util.execArgv([root.gr].concat(args)) }
+
+  // ---- Add-ons: which are installed (`setup.sh status`, offline and instant), checked
+  // every time the popup opens, so one that finished installing shows up straight away.
+  property var ready: ({ ums: true, bubble: true, share: true, shortcut: true, webcam: true })
   Process {
-    id: setupProbe
-    command: ["test", "-s", Quickshell.env("HOME") + "/.config/lumen/setup.json"]
-    onExited: function(code) { if (code === 0) setupFile.reload() }
+    id: statusProc
+    command: [root.home + "/setup/setup.sh", "status"]
+    stdout: StdioCollector {
+      id: statusOut
+      waitForEnd: true
+      onStreamFinished: { try { root.ready = JSON.parse(statusOut.text) } catch (e) {} }
+    }
   }
-  FileView {
-    id: setupFile
-    path: Quickshell.env("HOME") + "/.config/lumen/setup.json"
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: { try { root.setupDone = JSON.parse(text()).done === "yes" } catch (e) { root.setupDone = false } }
-    onLoadFailed: root.setupDone = false
+  function refreshStatus() { statusProc.running = false; statusProc.running = true }
+  // An add-on switch: on/off when installed, else a short guided install (which turns it on).
+  function addon(name, key, onValue, offValue) {
+    if (root.ready[name]) root.choose(key, root[key] === onValue ? offValue : onValue)
+    else root.runSetup([name])
   }
+  readonly property string addonNote: "Not installed · switch on to add it"
+
   function runSetup(args) {
     root.close()
     // Omarchy floats its terminal at 875×600; on a screen smaller than that, open a
     // plain (tiled) terminal instead so setup fits.
     var sc = panel.screen
     var small = !!sc && (sc.width < 960 || sc.height < 680)
-    Util.execArgv(["setsid", "uwsm-app", "--", "xdg-terminal-exec", "--app-id=" + (small ? "lumen.setup" : "org.omarchy.terminal"), "--title=Lumen setup",
+    Util.execArgv(["setsid", "uwsm-app", "--", "xdg-terminal-exec", "--app-id=" + (small ? "lumen.setup" : "org.omarchy.terminal"), "--title=Lumen",
                    "-e", "bash", "-c", '"$0" "$@"; echo; read -rsn1 -p "  Press any key to close."', root.home + "/setup/setup.sh"].concat(args || []))
   }
   // The mic switch remembers whether sound was mic-only or mic + desktop.
@@ -114,7 +112,7 @@ Panel {
   // The size row edits whichever format is selected.
   readonly property int shownWidth: format === "mp4" ? mp4Width : gifWidth
   property int delay: 0
-  property string audio: "none"
+  property string audio: "mic"      // until a choice is saved: the recorder uses the mic if there is one
 
   FileView {
     id: settingsFile
@@ -163,7 +161,7 @@ Panel {
 
   Process {
     id: micsProc
-    command: ["gif-record", "mics"]
+    command: [root.gr, "mics"]
     stdout: StdioCollector {
       id: micsOut
       waitForEnd: true
@@ -173,8 +171,18 @@ Panel {
     }
   }
   function refreshMics() { micsProc.running = false; micsProc.running = true }
-  onOpenedChanged: if (root.opened) refreshMics()
-  Component.onCompleted: refreshMics()
+  // The bubble is for framing yourself and for recordings: it shows while the popup
+  // is open and goes away when it closes, unless a recording is starting.
+  onOpenedChanged: {
+    if (root.opened) {
+      refreshMics()
+      refreshStatus()
+      if (root.camera === "on" && root.ready.bubble) root.gifRecord(["cam-preview"])
+    } else if (root.camera === "on") {
+      Util.execArgv(["setsid", "-f", root.gr, "cam-idle"])
+    }
+  }
+  Component.onCompleted: { refreshMics(); refreshStatus() }
 
   FileView {
     path: Quickshell.env("HOME") + "/.config/gif-record/voice.json"
@@ -192,7 +200,7 @@ Panel {
     else if (key === "mp4Width") root.mp4Width = Number(value)
     else if (key === "mic") root.micInfo = Object.assign({}, root.micInfo, { mic: value })
     else root[key] = Number(value)
-    Util.execArgv(["gif-record", "set", key, String(value)])
+    root.gifRecord(["set", key, String(value)])
   }
 
   function start() {
@@ -204,7 +212,7 @@ Panel {
   Timer {
     id: startDelay
     interval: 250
-    onTriggered: Util.execArgv(["gif-record", "start",
+    onTriggered: root.gifRecord(["start",
       "--format=" + root.format, "--target=" + root.target,
       "--fps=" + root.fps, "--mp4fps=" + root.mp4Fps,
       "--width=" + root.shownWidth, "--delay=" + root.delay, "--audio=" + root.audio,
@@ -322,42 +330,9 @@ Panel {
           }
         }
 
-        // ================= First run =================
-        Column {
-          visible: root.tab === "record" && !root.setupDone
-          width: parent.width
-          spacing: Style.space(10)
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            text: "Record your screen, your face in a bubble, ums removed, and a share link the moment you stop."
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-          }
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            text: "Setup takes about 3 minutes: it installs what's missing, asks where the AI runs and where videos go, and checks your mic."
-            color: Qt.darker(root.fg, 1.4)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-          Button {
-            width: parent.width
-            bordered: true
-            selected: true
-            foreground: root.fg
-            fontFamily: root.fontFamily
-            iconText: "✦"
-            text: "Set up Lumen"
-            onClicked: root.runSetup([])
-          }
-        }
-
         // ================= Record tab =================
         Column {
-          visible: root.tab === "record" && root.setupDone
+          visible: root.tab === "record"
           width: parent.width
           spacing: Style.space(10)
 
@@ -424,13 +399,15 @@ Panel {
               fontFamily: root.fontFamily
               icon: "󰄀"
               label: "Face bubble (beta)"
-              checked: root.camera === "on"
-              onToggled: root.choose("camera", root.camera === "on" ? "off" : "on")
+              note: !root.ready.bubble ? root.addonNote + " (0.5 GB)"
+                    : root.camera === "on" && !root.ready.webcam ? "No webcam plugged in" : ""
+              checked: root.camera === "on" && root.ready.bubble
+              onToggled: root.addon("bubble", "camera", "on", "off")
               TextLink {
-                  fontFamily: root.fontFamily
-                visible: root.camera === "on"
+                fontFamily: root.fontFamily
+                visible: root.camera === "on" && root.ready.bubble && root.ready.webcam
                 text: "Center me"
-                onActivated: Util.execArgv(["lumen-cam", "center"])
+                onActivated: Util.execArgv([root.home + "/bin/lumen-cam", "center"])
               }
             }
             SwitchRow {
@@ -439,11 +416,10 @@ Panel {
               visible: root.micOn
               icon: "󰃢"
               label: "Remove ums & pauses"
-              note: root.clean !== "on" ? "" : (root.ai === "local" ? "Runs on this computer only"
-                    : root.ai === "cloud" ? "Runs on your Cloudflare's AI"
-                    : "Graphics card if you have one, else your Cloudflare, else this computer") + " · uncut copy kept"
-              checked: root.clean === "on"
-              onToggled: root.choose("clean", root.clean === "on" ? "off" : "on")
+              note: !root.ready.ums ? root.addonNote + (root.ready.nvidia ? " (4 GB)" : " (2 GB)")
+                    : root.clean !== "on" ? "" : "Cut when you stop · uncut copy kept"
+              checked: root.clean === "on" && root.ready.ums
+              onToggled: root.addon("ums", "clean", "on", "off")
             }
             SwitchRow {
               foreground: root.fg
@@ -451,9 +427,10 @@ Panel {
               visible: root.mp4
               icon: "󰌷"
               label: "Share link when done"
-              note: root.share === "cloudflare" ? "Link copied the moment you stop" : "Keep it on this computer"
-              checked: root.share === "cloudflare"
-              onToggled: root.choose("share", root.share === "cloudflare" ? "off" : "cloudflare")
+              note: !root.ready.share ? "Uses your own free Cloudflare · switch on to connect it"
+                    : root.share === "cloudflare" ? "Link copied the moment you stop" : "Keep it on this computer"
+              checked: root.share === "cloudflare" && root.ready.share
+              onToggled: root.addon("share", "share", "cloudflare", "off")
             }
             Text {
               visible: !root.mp4
@@ -516,7 +493,7 @@ Panel {
             width: parent.width
             text: (root.mp4 && root.estimateMBperMin > 0
                    ? "About " + root.mb(root.estimateMBperMin) + " MB per minute" + (root.mode === "screen" ? "" : " (full screen)") + "\n"
-                   : "") + "Enter or Shift+Alt+Print · click ✦ again to stop"
+                   : "") + (root.ready.shortcut ? "Enter or Shift+Alt+Print" : "Enter") + " · click ✦ again to stop"
             horizontalAlignment: Text.AlignHCenter
             color: Qt.darker(root.fg, 1.6)
             font.family: root.fontFamily
@@ -581,7 +558,8 @@ Panel {
                 tooltipText: "Share: copy a link and upload"
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onClicked: Util.execArgv(["setsid", "-f", "vshare", "upload", root.lastGif])
+                onClicked: root.ready.share ? Util.execArgv(["setsid", "-f", root.home + "/bin/vshare", "upload", root.lastGif])
+                                            : root.runSetup(["share"])
               }
               PanelActionButton {
                 iconText: "󰉋"
@@ -675,9 +653,9 @@ Panel {
             onChanged: function(v) { root.choose("width", v) }
           }
 
-          PanelSectionHeader { visible: root.mp4; text: "AI RUNS ON"; foreground: root.fg; fontFamily: root.fontFamily }
+          PanelSectionHeader { visible: root.mp4 && root.ready.ums; text: "AI RUNS ON"; foreground: root.fg; fontFamily: root.fontFamily }
           ButtonGroup {
-            visible: root.mp4
+            visible: root.mp4 && root.ready.ums
             focusable: false
             foreground: root.fg
             fontFamily: root.fontFamily
@@ -737,10 +715,21 @@ Panel {
             foreground: root.fg
             fontFamily: root.fontFamily
             iconText: "󰒓"
-            text: "Setup & accounts…"
-            tooltipText: "Run Lumen's setup again: where the AI runs, Cloudflare, your name, the face bubble"
+            text: "Add-ons…"
+            tooltipText: "Pick what to install: remove ums, face bubble, share links, shortcut, terminal commands"
             onClicked: root.runSetup([])
           }
+          Button {
+            visible: !root.ready.shortcut
+            width: parent.width
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            iconText: "󰌌"
+            text: "Add the Shift+Alt+Print shortcut"
+            tooltipText: "Adds one marked line to your Hyprland bindings; Add-ons → uninstall takes it out again"
+            onClicked: { Util.execArgv([root.home + "/setup/setup.sh", "shortcut"]); shortcutRecheck.restart() }
+          }
+          Timer { id: shortcutRecheck; interval: 800; onTriggered: root.refreshStatus() }
           PanelSectionHeader { visible: root.mp4 && root.audio !== "none"; text: "ADVANCED"; foreground: root.fg; fontFamily: root.fontFamily }
           Button {
             visible: root.mp4 && root.audio !== "none"
@@ -752,17 +741,17 @@ Panel {
               ? "Tune your mic's sound · now " + (root.activeMicEntry.tuned ? root.activeMicEntry.preset : "not tuned")
               : "Tune your mic's sound…"
             tooltipText: "Record a sample and adjust how this mic sounds, by ear"
-            onClicked: { Util.execArgv(["voice-tune"]); root.close() }
+            onClicked: { Util.execArgv([root.home + "/bin/voice-tune"]); root.close() }
           }
           Button {
-            visible: root.mp4
+            visible: root.mp4 && root.ready.share
             width: parent.width
             foreground: root.fg
             fontFamily: root.fontFamily
             iconText: "󰕧"
             text: "Shared videos…"
             tooltipText: "Views, rename, password, delete"
-            onClicked: { Util.execArgv(["vshare", "dashboard"]); root.close() }
+            onClicked: { Util.execArgv([root.home + "/bin/vshare", "dashboard"]); root.close() }
           }
           Text {
             width: parent.width

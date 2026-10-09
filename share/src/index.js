@@ -7,8 +7,9 @@
 //   /api/...            used by the `vshare` command (Bearer ADMIN_TOKEN)
 //
 // Videos live in R2 under videos/<id>.mp4 and thumbs/<id>.jpg; details in D1.
-// The dashboard is unlocked by opening /dashboard?key=<ADMIN_TOKEN> once, which
-// sets an HttpOnly cookie; `vshare dashboard` does that for you.
+// The dashboard is unlocked by `vshare dashboard`: it opens a private local page that
+// POSTs the key to /dashboard/login, which answers with a session cookie (an HMAC of
+// a random id, never the key itself). Rotating ADMIN_TOKEN signs every session out.
 
 import { STUDIO_CSS, STUDIO_JS, studioBody } from "./player.js"
 
@@ -38,10 +39,10 @@ async function route(req, env) {
     if (p.length === 2 && m === "GET") return sharePage(req, env, v)
     if (p[2] === "unlock" && m === "POST") return unlock(req, env, v)
     if (p[2] === "status") return json({ status: v.status })
-    if (p[2] === "thumb.jpg") return v.pw_hash && !isAdmin(req, env) ? notFound() : r2Object(req, env, `thumbs/${v.id}.jpg`, "image/jpeg")
+    if (p[2] === "thumb.jpg") return v.pw_hash && !(await isAdmin(req, env)) ? notFound() : r2Object(req, env, `thumbs/${v.id}.jpg`, "image/jpeg")
     // The link-preview card is public (previews happen before anyone logs in); the
     // hover frames show the video's content, so they follow the password like the video.
-    if (p[2] === "card.jpg") return v.pw_hash && !isAdmin(req, env) ? notFound() : r2Object(req, env, `cards/${v.id}.jpg`, "image/jpeg")
+    if (p[2] === "card.jpg") return v.pw_hash && !(await isAdmin(req, env)) ? notFound() : r2Object(req, env, `cards/${v.id}.jpg`, "image/jpeg")
     if (p[2] === "sprite.jpg") {
       if (!(await canWatch(req, v))) return new Response("Locked", { status: 403 })
       return r2Object(req, env, `sprites/${v.id}.jpg`, "image/jpeg")
@@ -58,21 +59,28 @@ async function route(req, env) {
     return notFound()
   }
 
+  if (p[0] === "dashboard" && p[1] === "login" && req.method === "POST") {
+    const form = await req.formData().catch(() => null)
+    const key = form && form.get("key")
+    if (!env.ADMIN_TOKEN || !same(String(key || ""), env.ADMIN_TOKEN)) return page("Dashboard", `<p class="muted">Wrong key.</p>`, 403)
+    const sid = [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2, "0")).join("")
+    // A same-site page then navigates on, so the Strict cookie is sent from here on.
+    return new Response(`<!doctype html><meta charset="utf-8"><title>Lumen</title><script>location.replace("/dashboard")</script>`, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "Set-Cookie": `adm=${sid}.${await sessionSig(env, sid)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`,
+        "Cache-Control": "no-store",
+      },
+    })
+  }
+
   if (p[0] === "dashboard") {
-    const key = url.searchParams.get("key")
-    if (key) {
-      if (!same(key, env.ADMIN_TOKEN)) return page("Dashboard", `<p class="muted">Wrong key.</p>`, 403)
-      return new Response(null, { status: 302, headers: {
-        Location: "/dashboard",
-        "Set-Cookie": `admin=${key}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000`,
-      } })
-    }
-    if (!isAdmin(req, env)) return page("Dashboard", `<p class="muted">Open the dashboard with <code>vshare dashboard</code> on your laptop.</p>`, 403)
+    if (!(await isAdmin(req, env))) return page("Dashboard", `<p class="muted">Open the dashboard with <code>vshare dashboard</code> on your laptop.</p>`, 403)
     return html(DASHBOARD)
   }
 
   if (p[0] === "api") {
-    if (!isAdmin(req, env)) return json({ error: "unauthorised" }, 401)
+    if (!(await isAdmin(req, env))) return json({ error: "unauthorised" }, 401)
     return api(req, env, p.slice(1), url)
   }
 
@@ -222,7 +230,7 @@ async function sharePage(req, env, v) {
       <script>setInterval(async()=>{const r=await fetch(location.pathname+"/status");if((await r.json()).status==="ready")location.reload()},2000)</script>`,
       200, meta(v, link, origin))
   }
-  if (!BOTS.test(req.headers.get("user-agent") || "") && !isAdmin(req, env)) {
+  if (!BOTS.test(req.headers.get("user-agent") || "") && !(await isAdmin(req, env))) {
     await env.DB.prepare("UPDATE videos SET views = views + 1, last_view = ? WHERE id = ?").bind(Date.now(), v.id).run()
   }
   const poster = v.has_thumb && !v.pw_hash ? ` poster="/v/${v.id}/thumb.jpg"` : ""
@@ -302,7 +310,9 @@ function newId() {
 // Each install has its own salt (PASSWORD_SALT, set by `lumen setup`). Changing it
 // would invalidate every password already set on a video, so it never changes.
 async function hashPw(env, id, pw) {
-  const salt = env.PASSWORD_SALT || "lumen"
+  // No silent shared fallback: without this install's own salt, passwords can't be set or checked.
+  if (!env.PASSWORD_SALT) throw new Error("PASSWORD_SALT is not set")
+  const salt = env.PASSWORD_SALT
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:${id}:${pw}`))
   return [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, "0")).join("")
 }
@@ -319,12 +329,20 @@ function cookie(req, name) {
   return m ? m[1] : null
 }
 
-function isAdmin(req, env) {
+async function sessionSig(env, sid) {
+  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.ADMIN_TOKEN), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+  const sig = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(`lumen-dashboard:${sid}`))
+  return [...new Uint8Array(sig)].map(x => x.toString(16).padStart(2, "0")).join("")
+}
+
+async function isAdmin(req, env) {
   if (!env.ADMIN_TOKEN) return false
   const auth = req.headers.get("authorization") || ""
   if (auth.startsWith("Bearer ") && same(auth.slice(7), env.ADMIN_TOKEN)) return true
-  const c = cookie(req, "admin")
-  return !!c && same(c, env.ADMIN_TOKEN)
+  const c = cookie(req, "adm")
+  if (!c || !/^[0-9a-f]{32}\.[0-9a-f]{64}$/.test(c)) return false
+  const [sid, sig] = c.split(".")
+  return same(sig, await sessionSig(env, sid))
 }
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]))

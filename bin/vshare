@@ -10,7 +10,8 @@
                                            summary (only if still untitled) and the preview card
   vshare dashboard                         open the Cloudflare dashboard (signs you in)
   vshare list                              recent shares from this laptop (JSON)
-  vshare setup cloudflare URL TOKEN        where your Lumen share worker lives
+  vshare setup cloudflare URL -            where your Lumen share worker lives (key on stdin,
+                                           so it never shows up in the process list)
 
 Cloudflare: Lumen's share/ folder (the worker), config in ~/.config/vshare/config.json.
 Progress for the bar: ~/.cache/vshare/state.json ({uploads: {id: {title, pct}}}).
@@ -27,6 +28,7 @@ import time
 import urllib.error
 import urllib.request
 
+os.umask(0o077)   # share links, transcripts and the site's key are private
 HOME = os.path.expanduser("~")
 CONF = os.path.join(HOME, ".config/vshare/config.json")
 INDEX = os.path.join(HOME, ".local/share/vshare/shares.json")
@@ -48,11 +50,32 @@ def load(path, default):
         return default
 
 
+def private_dir(path):
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    try:
+        if os.stat(path).st_uid == os.getuid():
+            os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
 def dump(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".tmp", "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(path + ".tmp", path)
+    """Write JSON so no other user can ever read it, not even for a moment: a fresh 0600
+    temp file next to the target (unpredictable name), flushed, then renamed over it."""
+    private_dir(os.path.dirname(path))
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="." + os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def notify(title, body="", *extra):
@@ -276,6 +299,31 @@ def entry(vid):
     return next((e for e in load(INDEX, []) if e.get("id") == vid), None)
 
 
+# ---------- dashboard sign-in
+
+def open_dashboard(base, token):
+    """Sign the browser in without the key ever being on a command line, in the browser's
+    history or in a URL Cloudflare logs: a private one-shot page in XDG_RUNTIME_DIR holds
+    the key and POSTs it to /dashboard/login, which sets a session cookie. The page
+    deletes itself shortly after."""
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if not run or not os.path.isdir(run):
+        notify("Lumen: can't open the dashboard", "XDG_RUNTIME_DIR isn't set")
+        return
+    import html as _html
+    fd, page = tempfile.mkstemp(dir=run, prefix="lumen-dashboard-", suffix=".html")
+    with os.fdopen(fd, "w") as f:
+        f.write(f"""<!doctype html><meta charset="utf-8"><title>Lumen</title>
+<body style="background:#16151f;color:#ecebf5;font-family:sans-serif">Opening your dashboard…
+<form id="f" method="POST" action="{_html.escape(base)}/dashboard/login">
+<input type="hidden" name="key" value="{_html.escape(token)}"></form>
+<script>document.getElementById("f").submit()</script>""")
+    subprocess.Popen(["xdg-open", page], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Give the browser time to read it, then remove it (detached, so the CLI returns now).
+    subprocess.Popen(["sh", "-c", 'sleep 20; rm -f "$0"', page], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 # ---------- CLI
 
 def opts(args):
@@ -306,10 +354,13 @@ def main():
     cmd, (o, rest) = sys.argv[1], opts(sys.argv[2:])
 
     if cmd == "setup" and rest[:1] == ["cloudflare"] and len(rest) == 3:
+        token = sys.stdin.readline().strip() if rest[2] == "-" else rest[2]
+        if not token:
+            print("vshare: no key on stdin", file=sys.stderr)
+            return 1
         c = load(CONF, {})
-        c["cloudflare"] = {"url": rest[1].rstrip("/"), "token": rest[2]}
+        c["cloudflare"] = {"url": rest[1].rstrip("/"), "token": token}
         dump(CONF, c)
-        os.chmod(CONF, 0o600)
         print("saved")
     elif cmd == "create":
         print(json.dumps(create(o.get("title") or default_title(), o.get("codec"))))
@@ -353,9 +404,7 @@ def main():
         polish(path, vid, e.get("title", DEFAULT_TITLE), doc, probe(path))
         print(json.dumps(entry(vid), ensure_ascii=False))
     elif cmd == "dashboard":
-        base, token = cf()
-        subprocess.Popen(["xdg-open", f"{base}/dashboard?key={token}"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open_dashboard(*cf())
     elif cmd == "list":
         print(json.dumps(load(INDEX, [])[: int(o.get("limit", 20))]))
     else:

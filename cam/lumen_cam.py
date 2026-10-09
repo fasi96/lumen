@@ -29,6 +29,8 @@ import cv2
 import gi
 import numpy as np
 
+os.umask(0o077)   # its state file and control socket are private
+
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
 from gi.repository import GLib, Gtk, Gtk4LayerShell as Layer  # noqa: E402
@@ -45,7 +47,7 @@ EFFECTS = ["plain", "glow", "rainbow", "fire"]
 SIZE_NAMES = ["Small", "Medium", "Large"]
 SHAPES = ["Blob", "Circle", "Card"]      # blob follows you; circle is the classic bubble; card is a portrait tile
 REC_STATE = os.path.expanduser("~/.cache/gif-record/state.json")
-CONTROL = f"{os.environ.get('XDG_RUNTIME_DIR', '/tmp')}/lumen-cam.sock"   # lumen-cam hide|show|place …
+CONTROL = f"{os.environ['XDG_RUNTIME_DIR']}/lumen-cam.sock"   # private runtime folder only (lumen-cam checks it)   # lumen-cam hide|show|place …
 HYPR_SOCKET = f"{os.environ.get('XDG_RUNTIME_DIR', '')}/hypr/{os.environ.get('HYPRLAND_INSTANCE_SIGNATURE', '')}/.socket.sock"
 # How much space you get around you: (name, framing zoom, resting circle radius).
 ROOMS = [("Snug", 1.35, 0.23), ("Normal", 1.12, 0.28), ("Roomy", 1.0, 0.36)]
@@ -417,7 +419,7 @@ class Bubble(Gtk.Application):
         motion.connect("motion", lambda c, x, y: setattr(self, "pointer", (x, y)))
         self.area.add_controller(motion)
         right = Gtk.GestureClick(button=3)
-        right.connect("released", lambda *a: self.close())
+        right.connect("released", lambda *a: self.close_by_user())
         self.area.add_controller(right)
 
         self.win = win
@@ -536,6 +538,13 @@ class Bubble(Gtk.Application):
     def center_me(self):
         self.src.center_request = True
 
+    def close_by_user(self):
+        """× or a right click: the person doesn't want the bubble, so the setting goes off
+        too (otherwise the next recording would bring it straight back)."""
+        gr = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "gif-record")
+        self.turn_off_setting = gr
+        self.close()
+
     def close(self):
         self.closing = True
         self.pop.target[:] = 0.0
@@ -563,6 +572,8 @@ class Bubble(Gtk.Application):
             # Out of the way (e.g. while you pick what to record): fade out, let clicks through.
             self.hidden = True
             self.pop.target[:] = 0.0
+            self.hover.target[0] = 0.0       # clicks pass through now, so no "leave" would come
+            self.pointer = None
         elif cmd == "show":
             self.hidden = False
             self.pop.target[:] = 1.0
@@ -646,6 +657,9 @@ class Bubble(Gtk.Application):
         # While a recording runs, the toolbar and labels stay hidden so they're never in the video.
         if now - self.rec_checked > 0.5:
             self.rec_checked = now
+            if not os.path.exists(os.path.realpath(__file__)):   # the plugin was removed: go too
+                self.closing = True
+                self.pop.target[:] = 0.0
             try:
                 with open(REC_STATE) as f:
                     self.recording = json.load(f).get("status") == "recording"
@@ -653,6 +667,11 @@ class Bubble(Gtk.Application):
                 self.recording = False
         self.hover.step(dt)
         if self.closing and self.pop.x[0] < 0.02:
+            gr = getattr(self, "turn_off_setting", None)
+            if gr:
+                # Only the saved choice; this process is about to end on its own.
+                subprocess.Popen([gr, "set", "camera", "off"], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.quit()
             return GLib.SOURCE_REMOVE
 
@@ -878,11 +897,11 @@ class Bubble(Gtk.Application):
             (self.icon_sparkle, self.next_effect, f"Outline: {EFFECTS[self.effect_i].title()}"),
             (self.icon_room, self.next_room, f"Room: {ROOMS[self.room_i][0]}"),
             (self.icon_center, self.center_me, "Center me"),
-            (self.icon_close, self.close, "Close"),
+            (self.icon_close, self.close_by_user, "Close"),
         ]
 
     def draw_toolbar(self, cr, poly, cx, t):
-        a = float(self.hover.x[0])
+        a = float(self.hover.x[0]) * min(1.0, float(self.pop.x[0]))
         self.buttons, self.toolbar_box = [], None
         # Shown during recordings too: it only appears while the pointer is on the bubble.
         if a < 0.02 or self.mode == "drag":

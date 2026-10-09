@@ -42,6 +42,17 @@ VERBATIM = {
     "hi": "उम्म, तो, अह, मैं सोचता हूँ... हम्म, ठीक है। अह, बात यह है कि, उम।",
 }
 MODEL = "large-v3-turbo"
+# Pinned to one upstream commit (Hugging Face: mobiuslabsgmbh → dropbox-dash/faster-whisper-large-v3-turbo),
+# so the weights can't change under you; setup downloads exactly this revision.
+MODEL_REVISION = "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
+
+
+def model_path():
+    from faster_whisper.utils import download_model
+    try:
+        return download_model(MODEL, revision=MODEL_REVISION, local_files_only=True)
+    except Exception:  # noqa: BLE001 — not cached yet: fetch that exact revision
+        return download_model(MODEL, revision=MODEL_REVISION)
 PAD_BEFORE, PAD_AFTER = 0.03, 0.06   # around a filler word
 PAUSE_KEEP = 0.35                    # how much of a long pause survives
 GAP = 0.2                            # the natural gap left where an "uh" is cut out
@@ -94,8 +105,8 @@ class Asr:
 
     def _load(self, engine):
         from faster_whisper import WhisperModel
-        self.model = (WhisperModel(MODEL, device="cuda", compute_type="float16") if engine == "gpu"
-                      else WhisperModel(MODEL, device="cpu", compute_type="int8"))
+        self.model = (WhisperModel(model_path(), device="cuda", compute_type="float16") if engine == "gpu"
+                      else WhisperModel(model_path(), device="cpu", compute_type="int8"))
         self.engine = engine
 
     def words(self, audio):
