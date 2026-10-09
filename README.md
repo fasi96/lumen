@@ -2,7 +2,7 @@
 
 **Loom-style screen recordings for Omarchy, without the subscription.**
 
-Click the ✦ in your top bar, record your screen with your voice and your face in a bubble, and when you stop, the ums and long pauses are already cut out and a share link is on your clipboard. The video lives in **your own** Cloudflare account, which is free for most people, or simply stays on your computer.
+Click the ✦ in your top bar, record your screen with your voice and your face in a bubble, and when you stop, the ums and long pauses are already cut out and a share link is on your clipboard. Every recording is an **MP4 file on your computer**, shared or not; share links add a copy in **your own** Cloudflare account, which is free for most people.
 
 <p align="center"><img src="docs/demo.gif" alt="Click the sparkle in the bar, start recording, stop, and the share link is copied" width="640"></p>
 
@@ -11,6 +11,7 @@ Click the ✦ in your top bar, record your screen with your voice and your face 
 ## What it does
 
 - **Records** an area you drag, one window, or a whole screen, as MP4 (or GIF).
+- **Your file, always.** Every recording is saved as an MP4 in `~/Videos`, even when you share it, plus the uncut version when ums are removed. There's nothing to download back from a cloud, and it's yours to edit, keep or post anywhere.
 - **Your mic**, optionally mixed with what the computer plays.
 - **Removes ums and long pauses** automatically. The speech AI runs on your NVIDIA card, on your own Cloudflare account, or on your processor, and you choose where. The uncut recording is always kept.
 - **Share links the moment you stop.** The link is copied before the upload even finishes. The page has a proper player, a clickable transcript, chapters, an optional password and expiry, and view counts, with a dashboard for all your videos.
@@ -58,7 +59,7 @@ Loom is great, but on Linux it doesn't exist: Loom only makes desktop apps for W
 | **Video length and count** | No limit from Lumen (your Cloudflare storage: 10 GB free) | Free plan: 5 minutes, 25 videos |
 | **Removes ums and long pauses** | Included | Only on Business + AI ($20–24 per person per month) |
 | **AI titles, summaries, chapters** | Included | Only on Business + AI |
-| **Where your videos live** | Your own Cloudflare account (on Cloudflare's servers), or just your computer | Loom's servers |
+| **Where your videos live** | An MP4 on your computer, always; share links add a copy in your own Cloudflare account | Loom's servers |
 | **Speech AI can run on your own machine** | Yes | No |
 | **Open source** | Yes (MIT) | No |
 
