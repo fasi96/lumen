@@ -89,7 +89,7 @@ Switch any of these on in the popup and Lumen installs what that one needs, the 
 | **Face bubble (beta)** | The camera AI's Python packages (about 0.5 GB) |
 | **Share links** | A share site in **your own** Cloudflare account; `nodejs` and `npm` to publish it |
 
-`lumen setup` shows the same list as a checklist, plus two more: the **Shift+Alt+Print** shortcut (also one click in **Settings**) and terminal commands in `~/.local/bin`.
+**Settings → Add-ons…** in the popup shows the same list as a checklist, plus two more: the **Shift+Alt+Print** shortcut (also one click in **Settings**) and terminal commands in `~/.local/bin` (`lumen`, `lumen setup`, …).
 
 ### Share links need a (free) Cloudflare account
 
@@ -105,7 +105,7 @@ When you switch share links on, setup creates everything in **your** account: st
 | **Shared videos** | Settings → **Shared videos…** (rename, password, delete, views) |
 | **Face bubble** | Drag to move it, scroll to resize it, hover it for the toolbar. *Center me* (under the Face bubble switch) frames you |
 
-From a terminal, `lumen help` lists everything: `lumen record`, `lumen stop`, `lumen share list`, `lumen cam center`, …
+Once you've added the terminal commands (Settings → Add-ons…), `lumen help` lists everything: `lumen record`, `lumen stop`, `lumen share list`, `lumen cam center`, …
 
 ## Privacy
 
@@ -117,7 +117,7 @@ From a terminal, `lumen help` lists everything: `lumen record`, `lumen stop`, `l
 
 ## Known limitations
 
-- **Graphics:** the main recorder needs Intel, AMD or NVIDIA graphics. Elsewhere (for example in a virtual machine), Lumen switches to a backup recorder automatically once it's installed (`lumen setup recorder`; Lumen tells you if it's needed). The backup records your mic but **not desktop sound**.
+- **Graphics:** the main recorder needs Intel, AMD or NVIDIA graphics. Elsewhere (for example in a virtual machine), Lumen switches to a backup recorder automatically once it's installed (Lumen tells you if it's needed, and how). The backup records your mic but **not desktop sound**.
 - **Um removal without an NVIDIA card** runs on Cloudflare or your processor. On the processor it took about **3× longer** than on an NVIDIA card in our test, with the same result.
 - **The face bubble is in beta.** It uses roughly one processor core while it's open.
 - **Two people far apart** in the face bubble each show as half a person.
@@ -126,10 +126,10 @@ From a terminal, `lumen help` lists everything: `lumen record`, `lumen stop`, `l
 ## Uninstall
 
 ```
-lumen uninstall
+~/.config/omarchy/plugins/io.github.fasi96.lumen/setup/setup.sh uninstall
 ```
 
-Run it **before** `omarchy plugin remove io.github.fasi96.lumen` (if you already removed the plugin, run `~/.local/share/lumen/uninstaller/setup.sh uninstall`). It removes exactly what setup added, using the record setup keeps in `~/.config/lumen/installed.json`:
+(or `lumen uninstall` if you added the terminal commands). Run it **before** `omarchy plugin remove io.github.fasi96.lumen`; it removes the bar plugin too. If you already removed the plugin, run `~/.local/share/lumen/uninstaller/setup.sh uninstall` (that copy exists once any add-on was set up; if you never added one, only small settings files in `~/.config/gif-record` and `~/.cache/gif-record` are left behind). It removes exactly what setup added, using the record setup keeps in `~/.config/lumen/installed.json`:
 
 - the speech AI and, if Lumen downloaded it, the speech model;
 - the shortcut block in your Hyprland bindings (left alone if you've edited it);

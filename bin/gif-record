@@ -291,7 +291,7 @@ start() {
     cat "$err" >>"$LOG"
     why=$(recorder_problem "$err")
     rm -f "$mp4"
-    command -v wf-recorder >/dev/null || fail_to_start "$why, and the backup recorder (wf-recorder) isn't installed: run 'lumen setup recorder'"
+    command -v wf-recorder >/dev/null || fail_to_start "$why, and the backup recorder (wf-recorder) isn't installed: run $LUMEN_HOME/setup/setup.sh recorder"
     local wsound=()
     [[ $format == mp4 && $audio != none ]] && wsound=(--audio="$mic" -C aac)
     [[ $format == mp4 && $audio == both ]] && note=" Only your mic is recorded with it, not desktop sound."
