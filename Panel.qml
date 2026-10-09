@@ -392,6 +392,32 @@ Panel {
                   }
                   onChanged: function(v) { root.choose("mic", v) }
                 }
+                // How this mic sounds in recordings: a preset in one click, or the tuner.
+                Dropdown {
+                  width: parent.width
+                  showLabel: false
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  value: root.activeMicEntry && root.activeMicEntry.tuned ? String(root.activeMicEntry.preset || "Custom") : "Natural"
+                  options: {
+                    var o = [
+                      { value: "Natural", label: "Sound: Natural" },
+                      { value: "Podcast", label: "Sound: Podcast · warmer, fuller" },
+                      { value: "Crisp", label: "Sound: Crisp · clearer speech" },
+                      { value: "Noisy room", label: "Sound: Noisy room · strong noise removal" },
+                      { value: "Raw", label: "Sound: Raw · exactly as recorded" }
+                    ]
+                    var cur = root.activeMicEntry && root.activeMicEntry.tuned ? String(root.activeMicEntry.preset || "Custom") : ""
+                    if (cur && ["Natural", "Podcast", "Crisp", "Noisy room", "Raw"].indexOf(cur) === -1)
+                      o.push({ value: cur, label: "Sound: " + cur + " (your tuning)" })
+                    o.push({ value: "__tune", label: "Fine-tune by ear…" })
+                    return o
+                  }
+                  onChanged: function(v) {
+                    if (v === "__tune") { Util.execArgv([root.home + "/bin/voice-tune"]); root.close() }
+                    else Util.execArgv([root.home + "/bin/voice-tune", "--set-preset", v, "--mic", root.activeMic])
+                  }
+                }
               }
             }
             SwitchRow {

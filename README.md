@@ -19,7 +19,33 @@ Click the ✦ in your top bar, record your screen with your voice and your face 
 
 | Two people? The bubble joins you, then pops | Hover the bubble to restyle it | The share page |
 |---|---|---|
-| <img src="docs/bubble-pop.gif" alt="A friend leans into the bubble; it joins both people, then pops apart" width="260"> | <img src="docs/bubble-toolbar.gif" alt="The bubble toolbar switching the outline from plain to glow to rainbow" width="240"> | <img src="docs/share-page.gif" alt="The share page with the player, transcript and speed buttons" width="300"> |
+| <img src="docs/bubble-pop.gif" alt="A friend leans into the bubble; it joins both people, then pops apart" width="260"> | <img src="docs/bubble-toolbar.gif" alt="The bubble toolbar switching the outline from plain to glow to rainbow" width="240"> | <img src="docs/share-page.gif" alt="The share page playing, the transcript following along, then a search that jumps to the line" width="300"> |
+
+## The little things
+
+<img src="docs/tuner.jpg" alt="The mic tuner: a sample's waveform, Tuned and Original buttons, and the presets" width="300" align="right">
+
+- **Your mic, made to sound good.** Pick a sound right under the mic: Natural, Podcast, Crisp or Noisy room. Or fine-tune it by ear: record a few seconds, then flip between *Tuned* and *Original*, played at the same loudness so you hear the tone, not the volume. Each mic keeps its own sound, so your headset and your webcam mic can be tuned differently.
+- **Ums in more than one language.** Lumen cuts English hesitations and the usual Urdu and Hindi ones. It never cuts real words like "like" or "so", and it listens again afterwards to check nothing was missed.
+- **The bubble listens.** While you record, it ripples gently as you talk.
+- **The link comes first.** It's on your clipboard the moment you stop, while Lumen is still saving and uploading.
+- **GIF mode** for quick loops: silent, and it pastes into any chat as an image.
+- **Small conveniences:** a live "about 20 MB per minute" estimate, AV1 for files about a third of the size, and if the screen you picked is unplugged, it records the one you're on.
+
+<br clear="right">
+
+**The share page**
+
+<img src="docs/hover-preview.jpg" alt="Hovering the timeline: a preview frame and the label 'uh removed' above a purple dot" width="420" align="right">
+
+- **You can see what was cut.** Purple dots on the timeline mark each removed "um", and hovering one tells you which. The transcript shows them struck through.
+- **Hover previews** on the timeline, like YouTube.
+- **Search the transcript**, then click a line to jump there. Captions, AI chapters, speeds up to 2×, and keyboard shortcuts (space, ← →, < >, C, F).
+- **It looks right when pasted.** Chat and social apps show a preview card with the title and how many ums were cut. Those link previews and bots don't count as views, so the view count is real people.
+
+<br clear="right">
+
+<p align="center"><img src="docs/paste-anywhere.jpg" alt="A pasted Lumen link showing a preview card with the video's title and '5 ums removed'" width="480"></p>
 
 ## Why Lumen, not Loom?
 

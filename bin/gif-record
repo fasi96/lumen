@@ -127,9 +127,11 @@ voice_filter() {
   local f
   f=$(jq -r --arg m "$1" '.profiles[$m].filter // .fallback.filter // .filter // empty' "$VOICE" 2>/dev/null)
   # A saved chain can name an RNNoise model that isn't on this computer; ffmpeg would
-  # fail on it, so drop that one step rather than the recording.
-  if [[ $f =~ arnndn=m=([^:,]+) ]] && [[ ! -f ${BASH_REMATCH[1]} ]]; then
-    f=$(sed -E 's/arnndn=m=[^,]*,?//; s/,$//' <<<"$f")
+  # fail on it, so swap in ffmpeg's own denoiser at the same strength instead.
+  if [[ $f =~ arnndn=m=([^:,]+):mix=([0-9.]+) ]] && [[ ! -f ${BASH_REMATCH[1]} ]]; then
+    local nr
+    nr=$(awk -v m="${BASH_REMATCH[2]}" 'BEGIN { printf "%.1f", 6 + 24 * m }')
+    f=$(sed -E "s/arnndn=m=[^,]*/afftdn=nr=$nr:tn=1/" <<<"$f")
   fi
   printf '%s\n' "$f"
 }

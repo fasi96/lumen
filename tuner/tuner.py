@@ -48,7 +48,7 @@ WARMUP = 1.0
 PARAMS = {
     "gain":      (-12, 12, 0.5, 0, "Input trim", "dB", "Turn down if the sample clips"),
     "rumble":    (20, 250, 5, 80, "Rumble cut", "Hz", "Removes desk thumps, fans, AC hum"),
-    "denoise":   (0, 100, 5, 60, "Noise removal", "%", "AI noise removal (RNNoise); too much sounds robotic"),
+    "denoise":   (0, 100, 5, 60, "Noise removal", "%", "Removes hiss, fans and room noise; too much sounds robotic"),
     "warmth":    (-6, 6, 0.5, 0, "Warmth", "dB", "Body of the voice, around 150 Hz"),
     "mud":       (-8, 0, 0.5, -2, "Mud cut", "dB", "Boxy, muffled room sound, around 350 Hz"),
     "presence":  (-6, 8, 0.5, 2, "Clarity", "dB", "Words cut through, around 3.5 kHz"),
@@ -84,9 +84,13 @@ def voice_filter(p):
         f.append(f"volume={p['gain']}dB")
     # Always at least 20 Hz: the mic waking from standby leaves a DC offset.
     f.append(f"highpass=f={max(p['rumble'], 20):g}:poles=2")
-    # RNNoise needs its model file; without it the chain must not mention it (ffmpeg would fail).
-    if p["denoise"] > 0 and os.path.exists(MODEL):
-        f.append(f"arnndn=m={MODEL}:mix={p['denoise'] / 100:.2f}")
+    # Noise removal: RNNoise (AI) when its model file is installed, else ffmpeg's own
+    # spectral denoiser, which needs nothing extra (milder, but every preset still works).
+    if p["denoise"] > 0:
+        if os.path.exists(MODEL):
+            f.append(f"arnndn=m={MODEL}:mix={p['denoise'] / 100:.2f}")
+        else:
+            f.append(f"afftdn=nr={6 + 0.24 * p['denoise']:.1f}:tn=1")
     if p["warmth"]:
         f.append(f"equalizer=f=150:t=q:w=0.8:g={p['warmth']:g}")
     if p["mud"]:
@@ -453,7 +457,21 @@ def open_window():
     os._exit(0)
 
 
+def set_preset(name, mic=None):
+    """`voice-tune --set-preset NAME [--mic SOURCE]`: give a mic one of the presets without
+    opening the window (the popup's Sound menu uses this)."""
+    if name not in PRESETS:
+        sys.exit(f"voice-tune: no preset called {name!r} (have: {', '.join(PRESETS)})")
+    mic = mic or recorder_mic()
+    label = next((m["label"] for m in mics() if m["name"] == mic), None)
+    save({"mic": mic, "params": PRESETS[name], "preset": name, "label": label})
+    print(f"{mic}: {name}")
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--set-preset":
+        mic = sys.argv[sys.argv.index("--mic") + 1] if "--mic" in sys.argv[3:-1] or "--mic" in sys.argv[3:] else None
+        return set_preset(sys.argv[2], mic)
     for c in clients():   # already open: just focus it
         if c.get("title") == TITLE:
             dsp(f'hl.dsp.focus({{ window = "address:{c["address"]}" }})')

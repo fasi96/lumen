@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0
+
+- **Sound presets one click away:** a Sound menu right under the mic (Natural, Podcast, Crisp, Noisy room, Raw), or *Fine-tune by ear…* for the tuner. Each mic keeps its own.
+- **Noise removal works on every machine:** it used to need an RNNoise model file Lumen never installed; without it, ffmpeg's own denoiser now does the job at the same strength.
+- README: the little things (presets, multilingual ums, the share page's previews and cut marks, link preview cards); new marketplace preview.
+
 ## 1.1.0
 
 Simpler to start, and ready for the Omarchy plugin marketplace.
