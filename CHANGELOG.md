@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1
+
+- Setup's share-site check no longer writes curl's reply to a file (the marketplace scanner read `curl … >/dev/null` followed by `npm ci … >/dev/null` as a download being run). Same behaviour.
+- Uninstall and add-on instructions work without the optional terminal commands.
+
 ## 1.2.0
 
 - **Sound presets one click away:** a Sound menu right under the mic (Natural, Podcast, Crisp, Noisy room, Raw), or *Fine-tune by ear…* for the tuner. Each mic keeps its own.

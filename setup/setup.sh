@@ -79,7 +79,9 @@ cf_answers() {
   url=$(cf_url) token=$(cf_token)
   [[ -n $url && -n $token ]] || return 1
   # The key goes to curl through its config on stdin, never on its command line.
-  printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -fsS -m 10 -A lumen-setup -K - "$url/api/videos" >/dev/null 2>&1
+  # The reply is only checked for success and thrown away (captured, never written to a file).
+  local reply
+  reply=$(printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -fsS -m 10 -A lumen-setup -K - "$url/api/videos" 2>&1)
 }
 venv_profile() {
   local v=$VENV
