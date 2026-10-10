@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.fasi96.lumen",
   "name": "Lumen Recorder",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "author": "fasi96",
   "description": "Loom-style screen recorder in your bar: area, window or screen, with your mic and one-click sound presets; every recording stays an MP4 on your computer. Optional add-ons, installed only when you switch them on (they ask first, and may ask for your password): remove ums and long pauses with a speech AI, a face bubble, and share links on your own Cloudflare account. To remove, run its uninstaller first (see README); it also removes the plugin.",
   "kinds": [

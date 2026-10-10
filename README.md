@@ -35,6 +35,8 @@ Click the ✦ in your top bar, record your screen with your voice and your face 
 
 <br clear="right">
 
+<p align="center"><img src="docs/bubble-talk.gif" alt="The face bubble's outline gently rippling while the person in it talks" width="300"><br><sub>The bubble listens: its outline ripples as you talk.</sub></p>
+
 **The share page**
 
 <img src="docs/hover-preview.jpg" alt="Hovering the timeline: a preview frame and the label 'uh removed' above a purple dot" width="420" align="right">

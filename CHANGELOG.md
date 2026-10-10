@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2
+
+- Share links: setup pins your Cloudflare account in the share site's settings, so an update can never publish into a different account; if wrangler is signed in to the wrong one, it says so and how to switch.
+- Uninstall also tidies the recorder's empty folders.
+- README: the talking bubble.
+
 ## 1.2.1
 
 - Setup's share-site check no longer writes curl's reply to a file (the marketplace scanner read `curl … >/dev/null` followed by `npm ci … >/dev/null` as a download being run). Same behaviour.

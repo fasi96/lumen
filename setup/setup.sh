@@ -212,6 +212,9 @@ connect_cloudflare() {
   sed -e "s/^name = .*/name = \"$name\"/" -e "s/^bucket_name = .*/bucket_name = \"$bucket\"/" \
       -e "s/^database_name = .*/database_name = \"$db\"/" -e "s/^database_id = .*/database_id = \"$dbid\"/" \
       wrangler.toml.example >wrangler.toml
+  # Pin the account, so a later update can never publish into a different Cloudflare
+  # account wrangler happens to be signed in to.
+  sed -i "/^name = /a account_id = \"$account\"" wrangler.toml
   # The name goes in as a TOML string, escaped (quotes, backslashes, sed's own & and /).
   python3 - "$owner" <<'PY'
 import json, re, sys
@@ -255,7 +258,19 @@ update_site() {
   local log
   log=$(mktemp -p "${XDG_RUNTIME_DIR:-$DATA}" lumen-setup.XXXXXX) || return 1
   gum spin --title "Publishing…" -- bash -c 'cd "$1" && node_modules/.bin/wrangler deploy' _ "$dir" >"$log" 2>&1 \
-    || { fail "Publishing failed (see $log)"; return 1; }
+    || {
+      local why
+      # The first non-empty line after wrangler's [ERROR] line says why (colour codes stripped).
+      why=$(sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$log" | awk '/\[ERROR\]/ { f = 1; next } f && NF { sub(/^ +/, ""); print; exit }')
+      fail "Publishing failed: ${why:-see $log}"
+      if grep -qE "not found|code: 10181|Authentication error|code: 10000" "$log"; then
+        local acct
+        acct=$(cd "$dir" && node_modules/.bin/wrangler whoami 2>/dev/null | grep -oE "│ [^│]+'s Account" | head -1 | sed 's/│ //')
+        say "Wrangler is signed in to ${acct:-a Cloudflare account} that doesn't have this share site." \
+            "Sign in to the account that does: cd $dir && node_modules/.bin/wrangler logout && node_modules/.bin/wrangler login"
+      fi
+      return 1
+    }
   rm -f "$log"
   cf_answers && ok "Your share site is up to date: $(cf_url)" || warn "Published, but it isn't answering yet — try 'lumen setup check' in a minute"
 }
@@ -546,6 +561,8 @@ PY
       say "Remove the bar plugin with: omarchy plugin remove $pid"
     fi
   fi
+  # The bar can recreate its (empty) working folders while it unloads; tidy them last.
+  rmdir "$HOME/.config/gif-record" "$HOME/.cache/gif-record" "$HOME/.cache/vshare" 2>/dev/null
   rm -f "$HOME/.config/lumen/installed.json"
   rmdir "$HOME/.config/lumen" 2>/dev/null
   rm -rf "$DATA/uninstaller"
