@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 # Hesitation sounds only: removing real words like "like" or "so" changes meaning.
@@ -83,6 +84,27 @@ def cloud_conf():
         return None
 
 
+def cloud_post(path, data, ctype, timeout, limit, agent="lumen-clean/1.0"):
+    """POST to your share site: https only, no redirects (urllib would copy the key to any
+    host it's redirected to), and the reply read with a size limit."""
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+
+    base, token = cloud_conf()
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?|http://(127\.0\.0\.1|localhost)(:\d+)?", base):
+        raise RuntimeError("the share site address must start with https://")
+    req = urllib.request.Request(base + path, data=data, method="POST",
+                                 headers={"Authorization": f"Bearer {token}", "User-Agent": agent, "Content-Type": ctype})
+    with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as r:
+        body = r.read(limit + 1)
+    if len(body) > limit:
+        raise RuntimeError("the share site's reply is too large")
+    return json.loads(body)
+
+
 class Asr:
     """Whisper with word times, on one of three engines:
       gpu   — large-v3-turbo on this laptop's GPU (fast, nothing leaves the machine)
@@ -136,18 +158,12 @@ class Asr:
 
     def _cloud(self, audio, chunk_s=300):
         import urllib.parse
-        import urllib.request
-        base, token = cloud_conf()
 
         def call(samples, language=None, prompt=None):
             mp3 = subprocess.run(["ffmpeg", "-v", "error", "-f", "f32le", "-ar", str(SR), "-ac", "1", "-i", "pipe:0",
                                   "-b:a", "48k", "-f", "mp3", "pipe:1"], input=samples.tobytes(), capture_output=True).stdout
             q = urllib.parse.urlencode({k: v for k, v in (("language", language), ("prompt", prompt)) if v})
-            req = urllib.request.Request(f"{base}/api/transcribe?{q}", data=mp3, method="POST",
-                                         headers={"Authorization": f"Bearer {token}", "User-Agent": "lumen-clean/1.0",
-                                                  "Content-Type": "audio/mpeg"})
-            with urllib.request.urlopen(req, timeout=300) as r:
-                return json.loads(r.read())
+            return cloud_post(f"/api/transcribe?{q}", mp3, "audio/mpeg", 300, 8 * 1024 * 1024)
 
         if self.lang == "auto":            # a short first pass just to learn the language
             self.lang = call(audio[: SR * 30]).get("language") or "en"
@@ -192,13 +208,16 @@ def merge(ranges):
 
 
 SR = 16000
+MAX_HOURS = 4          # longer recordings aren't cleaned up (16 kHz floats: ~0.9 GB of RAM)
 
 
 def decode_audio(path):
     """The recording's audio as 16 kHz mono floats, via ffmpeg (so the cloud-only
-    install doesn't need the speech-AI packages just to read a file)."""
+    install doesn't need the speech-AI packages just to read a file). At most
+    MAX_HOURS, whatever the file claims, so a crafted file can't exhaust memory."""
     import numpy as np
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "f32le", "-ac", "1", "-ar", str(SR), "pipe:1"],
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-t", str(MAX_HOURS * 3600),
+                          "-f", "f32le", "-ac", "1", "-ar", str(SR), "pipe:1"],
                          capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.float32).copy()
 FRAME = 160          # 10 ms loudness slices
@@ -315,8 +334,9 @@ def cut_video(src, dst, keeps, codec, width=0, progress=None):
     parts.append(f"[vc]null{scale}[v]")
     vcodec = (["-c:v", "libsvtav1", "-preset", "10", "-crf", "40"] if codec == "smallest"
               else ["-c:v", "libx264", "-preset", "faster", "-crf", "23"])
-    script = dst + ".filter"
-    with open(script, "w") as f:
+    # A fresh private file next to the output (never a fixed name that could be a planted link).
+    fd, script = tempfile.mkstemp(prefix=".cut-", suffix=".filter", dir=os.path.dirname(os.path.abspath(dst)))
+    with os.fdopen(fd, "w") as f:
         f.write(";\n".join(parts))
     try:
         subprocess.run(["ffmpeg", "-v", "error", "-y", *(["-nostats", "-progress", progress] if progress else []),
@@ -345,6 +365,7 @@ def cleanup_marks(cuts, what, total):
 
 
 def main():
+    os.umask(0o077)    # transcripts, captions and the cut video are private
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("outdir")

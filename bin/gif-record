@@ -330,11 +330,13 @@ start() {
     local share_id=""
     if [[ $share == cloudflare ]]; then
       local link
-      if link=$("$VSHARE" create --codec h264 2>>"$LOG"); then
-        share_id=$(jq -r .id <<<"$link")
-        wl-copy "$(jq -r .url <<<"$link")"
+      if link=$("$VSHARE" create --codec h264 2>>"$LOG") && share_id=$(jq -r .id <<<"$link") \
+        && [[ $share_id =~ ^[A-Za-z0-9]{6,20}$ ]]; then
+        # On stdin: wl-copy keeps running, and its command line is readable by other users.
+        jq -j .url <<<"$link" | wl-copy
         notify -t 4000 "Share link copied" "Paste it anywhere — the video appears once it's uploaded"
       else
+        share_id=""
         notify -t 15000 "Couldn't create a share link" "Saving the recording locally only"
       fi
     fi
@@ -522,7 +524,7 @@ finish_mp4() {
   # Shared: the link is already on the clipboard; upload in the background so the
   # recorder is free again straight away. vshare reports progress and the result.
   if [[ -n $share_id ]]; then
-    setsid -f "$VSHARE" upload "$out" --id "$share_id" ${transcript:+--transcript "$transcript"} </dev/null >>"$LOG" 2>&1
+    setsid -f "$VSHARE" upload "$out" --id="$share_id" ${transcript:+--transcript="$transcript"} </dev/null >>"$LOG" 2>&1
     return
   fi
   wl-copy --type text/uri-list "file://$out"

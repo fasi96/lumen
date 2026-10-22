@@ -1,0 +1,20 @@
+# Local-only config for testing the share worker with `wrangler dev` (miniflare: R2 and D1
+# live on this computer, nothing touches Cloudflare). Never deploy with this file.
+#   cd share && node_modules/.bin/wrangler dev --config dev/wrangler.toml --persist-to /tmp/lumen-share-dev \
+#     --var ADMIN_TOKEN:<random> --var PASSWORD_SALT:<random>
+# test/smoke.mjs (cd share && node test/smoke.mjs) does all of that for you.
+name = "lumen-share-dev"
+main = "../src/index.js"
+compatibility_date = "2026-09-01"
+
+[[r2_buckets]]
+binding = "VIDEOS"
+bucket_name = "lumen-videos-dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lumen-dev"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+OWNER_NAME = "Test Owner"

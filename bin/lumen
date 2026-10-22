@@ -7,7 +7,8 @@
 #   lumen open                 open the popup
 #   lumen set KEY VALUE        change a setting (format, target, audio, mic, camera, share, clean, mp4Width, …)
 #   lumen mics                 the microphones it can use, as JSON
-#   lumen share …              share links: create, upload FILE, list, dashboard, polish ID (vshare)
+#   lumen share …              share links: create, upload FILE, list, dashboard, polish ID,
+#                              connect-code (connect Lumen for Chrome) (vshare)
 #   lumen cam …                the face bubble: start, stop, center, hide, show (lumen-cam)
 #   lumen tune                 tune how your mic sounds (voice-tune)
 #   lumen setup [check|ai|cloudflare]   get Lumen ready on this computer (safe to re-run)

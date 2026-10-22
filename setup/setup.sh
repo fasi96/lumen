@@ -35,6 +35,7 @@ fi
 RECORD=(python3 "$HERE/record.py")
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/lumen"
 VENV="${LUMEN_VENV:-$DATA/venv}"
+CAM_VENV="${LUMEN_CAM_VENV:-$DATA/cam-venv}"
 WORKER="$DATA/worker"
 STATE="$HOME/.config/lumen/setup.json"
 REC_CONF="$HOME/.config/gif-record/settings.json"
@@ -49,7 +50,7 @@ GR="$LUMEN_HOME/bin/gif-record"
 # Plain recording needs only what Omarchy ships (gpu-screen-recorder, ffmpeg, jq, slurp,
 # wl-clipboard, pactl), so it has no entry here.
 NEEDS_AI=("command -v uv=uv")
-NEEDS_BUBBLE=("command -v uv=uv" "test -e /usr/lib/libgtk4-layer-shell.so=gtk4-layer-shell" "python3 -c 'import gi'=python-gobject")
+NEEDS_BUBBLE=("command -v uv=uv" "test -e /usr/lib/libgtk4-layer-shell.so=gtk4-layer-shell" "python3 -I -c 'import gi'=python-gobject")
 NEEDS_SHARE=("command -v uv=uv" "command -v node=nodejs" "command -v npm=npm")
 NEEDS_RECORDER=("command -v wf-recorder=wf-recorder")
 
@@ -81,7 +82,8 @@ cf_answers() {
   # The key goes to curl through its config on stdin, never on its command line.
   # The reply is only checked for success and thrown away (captured, never written to a file).
   local reply
-  reply=$(printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -fsS -m 10 -A lumen-setup -K - "$url/api/videos" 2>&1)
+  # https only, no redirects (curl follows none without -L), and a cap on the reply's size.
+  reply=$(printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -fsS -m 10 --proto =https --max-filesize 8M -A lumen-setup -K - "$url/api/videos" 2>&1)
 }
 venv_profile() {
   local v=$VENV
@@ -94,7 +96,7 @@ venv_profile() {
   else echo cloud; fi
 }
 model_ready() {
-  "$LUMEN_HOME/share/clean/run" - "$MODEL" "$MODEL_REVISION" <<'PY' 2>/dev/null
+  "$LUMEN_HOME/share/clean/run" -P - "$MODEL" "$MODEL_REVISION" <<'PY' 2>/dev/null
 import sys
 from faster_whisper.utils import download_model
 download_model(sys.argv[1], revision=sys.argv[2], local_files_only=True)
@@ -164,11 +166,12 @@ connect_cloudflare() {
   gum confirm "Ready to continue?" || return 1
 
   # The share site's code gets built outside the plugin folder, with the exact tool versions
-  # in its lockfile (npm ci), and wrangler is run from there (no registry fallback).
+  # in its lockfile (npm ci), and wrangler is run from there (no registry fallback). No
+  # install scripts: the platform binaries already come as integrity-checked packages.
   "${RECORD[@]}" own-dir "$WORKER"
   rsync -a --delete --exclude node_modules --exclude .wrangler --exclude wrangler.toml --exclude .dev.vars --exclude .lumen-owned \
     "$LUMEN_HOME/share/" "$WORKER/" || return 1
-  (cd "$WORKER" && npm ci --silent --no-audit --no-fund) >/dev/null 2>&1 || { fail "Couldn't install the share site's tools (npm)"; return 1; }
+  (cd "$WORKER" && npm ci --ignore-scripts --silent --no-audit --no-fund) >/dev/null 2>&1 || { fail "Couldn't install the share site's tools (npm)"; return 1; }
   local wr=("$WORKER/node_modules/.bin/wrangler")
   # Wrangler's output (the database id, the site's address) stays in a private file.
   local log
@@ -216,7 +219,7 @@ connect_cloudflare() {
   # account wrangler happens to be signed in to.
   sed -i "/^name = /a account_id = \"$account\"" wrangler.toml
   # The name goes in as a TOML string, escaped (quotes, backslashes, sed's own & and /).
-  python3 - "$owner" <<'PY'
+  python3 -I - "$owner" <<'PY'
 import json, re, sys
 t = open("wrangler.toml").read()
 open("wrangler.toml", "w").write(re.sub(r'(?m)^OWNER_NAME = .*$', lambda m: "OWNER_NAME = " + json.dumps(sys.argv[1]), t))
@@ -240,7 +243,9 @@ PY
 }
 
 # Push this version's share-site code to the site you already have. Videos, links,
-# passwords and keys stay; only the code changes.
+# passwords and keys stay; only the code changes. New database columns/tables (e.g. the
+# device keys for Lumen for Chrome) are added by the worker itself on its first API call
+# after the update (migrate() in share/src/index.js), so there's no separate database step.
 update_site() {
   title "Update your share site"
   local dir
@@ -254,7 +259,7 @@ update_site() {
     fail "No share site set up on this computer (lumen setup share)"; return 1
   fi
   need_pkgs NEEDS_SHARE "Updating the share site" || return 1
-  (cd "$dir" && npm ci --silent --no-audit --no-fund) >/dev/null 2>&1 || { fail "Couldn't install the share site's tools (npm)"; return 1; }
+  (cd "$dir" && npm ci --ignore-scripts --silent --no-audit --no-fund) >/dev/null 2>&1 || { fail "Couldn't install the share site's tools (npm)"; return 1; }
   local log
   log=$(mktemp -p "${XDG_RUNTIME_DIR:-$DATA}" lumen-setup.XXXXXX) || return 1
   gum spin --title "Publishing…" -- bash -c 'cd "$1" && node_modules/.bin/wrangler deploy' _ "$dir" >"$log" 2>&1 \
@@ -331,12 +336,12 @@ install_ai() {
     # Quiet the Hugging Face "unauthenticated requests" warning; a token isn't needed for this public model.
     [[ -d $MODEL_CACHE ]] || "${RECORD[@]}" set model_downloaded_by_lumen yes
     HF_HUB_VERBOSITY=error PYTHONWARNINGS=ignore \
-      "$VENV/bin/python" -c "from faster_whisper.utils import download_model; download_model('$MODEL', revision='$MODEL_REVISION')" \
+      "$VENV/bin/python" -P -c "from faster_whisper.utils import download_model; download_model('$MODEL', revision='$MODEL_REVISION')" \
       || { fail "The download stopped — run 'lumen setup ai $want' to try again"; return 1; }
     ok "Speech model ready"
   fi
   local legacy=$LUMEN_HOME/share/clean/.venv
-  if [[ -d $legacy ]] && "$LUMEN_HOME/share/clean/run" -c "import numpy" 2>/dev/null; then
+  if [[ -d $legacy ]] && "$LUMEN_HOME/share/clean/run" -P -c "import numpy" 2>/dev/null; then
     say "An older copy of the AI tools is still inside the plugin folder ($(du -sh "$legacy" | cut -f1)); the new one replaces it."
     gum confirm "Delete the old copy?" && rm -rf "$legacy" && ok "Old copy deleted"
   fi
@@ -361,7 +366,17 @@ setup_bubble() {
   ls /dev/video* >/dev/null 2>&1 || warn "No webcam is plugged in right now; it'll work once one is."
   need_pkgs NEEDS_BUBBLE "The face bubble" || return 1
   say "Getting the camera AI ready (about 0.5 GB, once):"
-  uv sync --locked --script "$LUMEN_HOME/cam/lumen_cam.py" || { fail "Couldn't install the camera AI — run 'lumen setup bubble' to try again"; return 1; }
+  # Its own environment, from two hash-locked lists: the packages, and the tools that build
+  # two of them from source. uv checks every file it installs or builds with.
+  if ! uv pip install --help 2>/dev/null | grep -q -- --require-build-hashes; then
+    fail "The face bubble needs a newer uv (one that checks build tools): update Omarchy, then run 'lumen setup bubble'"
+    return 1
+  fi
+  [[ -x $CAM_VENV/bin/python ]] || uv venv -q --python 3.12 "$CAM_VENV" || { fail "Couldn't create the camera AI's environment"; return 1; }
+  "${RECORD[@]}" own-dir "$CAM_VENV"
+  uv pip install --python "$CAM_VENV/bin/python" --require-hashes --require-build-hashes --preview-features build-dependency-hashes \
+    -b "$LUMEN_HOME/cam/build-constraints.lock" -r "$LUMEN_HOME/cam/requirements.lock" \
+    || { fail "Couldn't install the camera AI — run 'lumen setup bubble' to try again"; return 1; }
   state_set bubble yes
   "$GR" set camera on >/dev/null
   ok "On: hover the bubble to change its size, shape and outline"
@@ -500,7 +515,7 @@ uninstall() {
   # before the environment that has that API goes.
   if [[ $("${RECORD[@]}" get model_downloaded_by_lumen) == yes && -d $MODEL_CACHE ]] &&
     gum confirm "Delete the speech model too (1.6 GB)?"; then
-    if [[ -x $VENV/bin/python ]] && "$VENV/bin/python" - "$MODEL" <<'PY' 2>/dev/null; then
+    if [[ -x $VENV/bin/python ]] && "$VENV/bin/python" -P - "$MODEL" <<'PY' 2>/dev/null; then
 import sys
 from huggingface_hub import scan_cache_dir
 info = scan_cache_dir()
@@ -516,6 +531,9 @@ PY
   # Folders setup created, recognised by the mark it left inside them.
   if "${RECORD[@]}" owned-dir "$VENV" || [[ -f $VENV/pyvenv.cfg && $VENV == "$DATA/venv" ]]; then
     rm -rf "$VENV" && ok "Speech AI removed"
+  fi
+  if "${RECORD[@]}" owned-dir "$CAM_VENV" || [[ -f $CAM_VENV/pyvenv.cfg && $CAM_VENV == "$DATA/cam-venv" ]]; then
+    rm -rf "$CAM_VENV" && ok "Camera AI removed"
   fi
   if ((keep_site)) && [[ -f $WORKER/wrangler.toml ]]; then
     say "Kept $WORKER: it's how your share site is managed (delete it with 'wrangler delete' there)."

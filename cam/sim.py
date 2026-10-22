@@ -4,7 +4,7 @@
 # ///
 """Simulate camera interactions and see how the bubble behaves.
 
-    uv run sim.py [OUTDIR] [--only NAME,...]
+    uv run --locked sim.py [OUTDIR] [--only NAME,...]
 
 Synthetic people (head, shoulders, arms, hands) act out scripted scenes in a
 fake 16:9 camera view. Their masks go through the real Framer and Crowd, just

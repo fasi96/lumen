@@ -12,6 +12,11 @@
   vshare list                              recent shares from this laptop (JSON)
   vshare setup cloudflare URL -            where your Lumen share worker lives (key on stdin,
                                            so it never shows up in the process list)
+  vshare connect-code [--name NAME] [--copy]
+                                           a one-time code that connects another device (Lumen
+                                           for Chrome) to your share site with its own key, which
+                                           you can revoke on the dashboard; --copy puts it on the
+                                           clipboard instead of printing it
 
 Cloudflare: Lumen's share/ folder (the worker), config in ~/.config/vshare/config.json.
 Progress for the bar: ~/.cache/vshare/state.json ({uploads: {id: {title, pct}}}).
@@ -20,6 +25,7 @@ Progress for the bar: ~/.cache/vshare/state.json ({uploads: {id: {title, pct}}})
 import concurrent.futures
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -105,10 +111,36 @@ def _set_progress(vid, title, pct, done):
 
 # ---------- Cloudflare
 
+# The share site's key never follows a redirect (urllib would copy the Authorization header
+# to any host, even over http), and replies are read with a size limit.
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None          # urllib then raises HTTPError for the 3xx
+
+
+OPENER = urllib.request.build_opener(_NoRedirect)
+MAX_REPLY = 8 * 1024 * 1024
+ID_RE = re.compile(r"[A-Za-z0-9]{6,20}")
+
+
+def read_capped(r, limit=MAX_REPLY):
+    data = r.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("the share site's reply is too large")
+    return data
+
+
+def site_ok(url):
+    """https only (http just for a worker on this machine, as the tests run one)."""
+    return bool(re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?|http://(127\.0\.0\.1|localhost)(:\d+)?", url))
+
+
 def cf():
     c = load(CONF, {}).get("cloudflare")
     if not c or not c.get("url") or not c.get("token"):
-        sys.exit("vshare: Cloudflare isn't set up (vshare setup cloudflare URL TOKEN)")
+        sys.exit("vshare: Cloudflare isn't set up (lumen setup share, or: vshare setup cloudflare URL - with the key on stdin)")
+    if not site_ok(c["url"].rstrip("/")):
+        sys.exit(f"vshare: the share site address must start with https:// ({c['url']})")
     return c["url"].rstrip("/"), c["token"]
 
 
@@ -122,11 +154,11 @@ def call(method, path, body=None, data=None, ctype="application/json", timeout=1
                                           "User-Agent": "vshare/1.0 (+gif-record)"})
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read() or b"{}")
+            with OPENER.open(req, timeout=timeout) as r:
+                return json.loads(read_capped(r) or b"{}")
         except (urllib.error.URLError, TimeoutError) as e:
             if isinstance(e, urllib.error.HTTPError) and e.code < 500:
-                raise RuntimeError(f"{method} {path}: {e.code} {e.read()[:200]!r}")
+                raise RuntimeError(f"{method} {path}: {e.code} {e.read(200)!r}")
             if attempt == 3:
                 raise
             time.sleep(1.5 * (attempt + 1))
@@ -147,6 +179,10 @@ def probe(path):
 
 def create(title, codec=None):
     r = call("POST", "/api/videos", {"title": title, "codec": codec})
+    # Only an id and a link on this site go further (into the clipboard, file names, options).
+    base, _ = cf()
+    if not ID_RE.fullmatch(str(r.get("id", ""))) or r.get("url") != f"{base}/v/{r['id']}":
+        raise RuntimeError("the share site answered with an unexpected id or link")
     remember({"id": r["id"], "url": r["url"], "title": title, "dest": "cloudflare",
               "created": int(time.time() * 1000), "status": "uploading"})
     return r
@@ -164,10 +200,10 @@ def make_transcript(path):
     return t if r.returncode == 0 and os.path.exists(t) else None
 
 
-def tool(script, *args):
+def tool(script, *args, stdin=None):
     """Run one of share/clean's scripts in its venv; returns stdout or None."""
     r = subprocess.run([os.path.join(CLEAN, "run"), os.path.join(CLEAN, script), *args],
-                       capture_output=True, text=True)
+                       input=stdin, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
 
 
@@ -272,10 +308,30 @@ def polish(path, vid, title, doc, info):
     c = doc.get("cleanup") or {}
     badge = f"{c['fillers']} um{'' if c['fillers'] == 1 else 's'} removed" if c.get("fillers") else ""
     with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
-        if tool("art.py", "card", path, t.name, "--title", title, "--meta",
-                f"{owner}  ·  {fmt_dur(info.get('duration'))}", "--badge", badge) is not None and os.path.getsize(t.name):
+        # The title (often written from what was said) goes on stdin, not the command line.
+        text = json.dumps({"title": title, "meta": f"{owner}  ·  {fmt_dur(info.get('duration'))}", "badge": badge})
+        if tool("art.py", "card", path, t.name, "--text", "-", stdin=text) is not None and os.path.getsize(t.name):
             with open(t.name, "rb") as f:
                 call("PUT", f"/api/videos/{vid}/card", data=f.read(), ctype="image/jpeg")
+
+
+# ---------- connecting other devices (Lumen for Chrome)
+
+def connect_code(name):
+    """Mint a device key on the share site and wrap it, with the site's address, in a code
+    to paste into the other device: "lumen1:" + base64url of {"u": url, "t": key, "n": name}.
+    The device key can only share videos and manage its own; the owner key never leaves
+    this computer. Revoke it any time on the dashboard (Devices)."""
+    import base64
+    base, _ = cf()
+    try:
+        r = call("POST", "/api/tokens", {"name": name})
+    except RuntimeError as e:
+        if " 404 " in str(e) or ": 404" in str(e):
+            sys.exit("vshare: your share site is too old for device keys — update it first: lumen setup site")
+        raise
+    body = json.dumps({"u": base, "t": r["token"], "n": name}, separators=(",", ":")).encode()
+    return "lumen1:" + base64.urlsafe_b64encode(body).decode().rstrip("=")
 
 
 # ---------- local index of shares
@@ -332,8 +388,8 @@ def opts(args):
     while i < len(args):
         a = args[i]
         if a.startswith("--"):
-            k, _, v = a[2:].partition("=")
-            if not v and i + 1 < len(args):
+            k, eq, v = a[2:].partition("=")
+            if not eq and i + 1 < len(args) and not args[i + 1].startswith("--"):   # --flag value
                 i += 1
                 v = args[i]
             out[k] = v
@@ -354,9 +410,16 @@ def main():
     cmd, (o, rest) = sys.argv[1], opts(sys.argv[2:])
 
     if cmd == "setup" and rest[:1] == ["cloudflare"] and len(rest) == 3:
-        token = sys.stdin.readline().strip() if rest[2] == "-" else rest[2]
+        # The key only on stdin: on a command line other users could read it.
+        if rest[2] != "-":
+            print("vshare: pass the key on stdin: vshare setup cloudflare URL -", file=sys.stderr)
+            return 1
+        token = sys.stdin.readline().strip()
         if not token:
             print("vshare: no key on stdin", file=sys.stderr)
+            return 1
+        if not site_ok(rest[1].rstrip("/")):
+            print("vshare: the share site address must start with https://", file=sys.stderr)
             return 1
         c = load(CONF, {})
         c["cloudflare"] = {"url": rest[1].rstrip("/"), "token": token}
@@ -367,11 +430,14 @@ def main():
     elif cmd == "upload" and rest:
         path = os.path.abspath(rest[0])
         vid = o.get("id")
+        if vid is not None and not ID_RE.fullmatch(vid):
+            sys.exit(f"vshare: not a share id: {vid!r}")
         title = o.get("title") or (entry(vid) or {}).get("title") or default_title(path)
         if not vid:
             r = create(title, probe(path).get("codec"))
             vid = r["id"]
-            subprocess.run(["wl-copy", r["url"]])
+            # On stdin: a command line is readable by other users for as long as wl-copy runs.
+            subprocess.run(["wl-copy"], input=r["url"], text=True)
             notify("Share link copied", "Uploading… the link works as soon as it's done")
         try:
             upload(path, vid, title, o.get("transcript"))
@@ -380,19 +446,21 @@ def main():
             notify("Upload failed", str(e)[:200], "-u", "critical")
             return 1
         e = entry(vid) or {}
-        notify("Video uploaded", f"{e.get('title', title)}\n{e.get('url', '')}", "-t", "6000")
+        notify("Video uploaded", f"{e.get('title', title)}\nThe link is on your clipboard and in the Lumen panel", "-t", "6000")
     elif cmd == "polish" and rest:
         vid = rest[0]
+        if not ID_RE.fullmatch(vid):
+            sys.exit(f"vshare: not a share id: {vid!r}")
         e = entry(vid) or {}
         path = e.get("file")
         if not path or not os.path.exists(path):
             sys.exit(f"vshare: no local file for {vid}")
         base, _ = cf()
         try:
-            with urllib.request.urlopen(urllib.request.Request(f"{base}/v/{vid}/transcript.json",
-                                        headers={"User-Agent": "vshare/1.0 (+gif-record)"}), timeout=30) as r:
-                doc = json.loads(r.read())
-        except (urllib.error.URLError, json.JSONDecodeError):
+            with OPENER.open(urllib.request.Request(f"{base}/v/{vid}/transcript.json",
+                             headers={"User-Agent": "vshare/1.0 (+gif-record)"}), timeout=30) as r:
+                doc = json.loads(read_capped(r))
+        except (urllib.error.URLError, json.JSONDecodeError, RuntimeError):
             doc = {}
         with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
             out = tool("art.py", "storyboard", path, t.name)
@@ -403,6 +471,16 @@ def main():
                 call("PUT", f"/api/videos/{vid}/transcript", data=json.dumps(doc, ensure_ascii=False).encode())
         polish(path, vid, e.get("title", DEFAULT_TITLE), doc, probe(path))
         print(json.dumps(entry(vid), ensure_ascii=False))
+    elif cmd == "connect-code":
+        import socket
+        name = o.get("name") or f"Lumen for Chrome ({socket.gethostname()})"
+        code = connect_code(name[:60])
+        if "copy" in o:
+            # On stdin, never on a command line (other users can read those).
+            subprocess.run(["wl-copy"], input=code, text=True)
+            print(f"Copied a connection code for \"{name[:60]}\". Paste it into Lumen for Chrome → Connect.")
+        else:
+            print(code)
     elif cmd == "dashboard":
         open_dashboard(*cf())
     elif cmd == "list":

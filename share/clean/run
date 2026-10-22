@@ -6,4 +6,8 @@ here=$(dirname "$(readlink -f "$0")")
 venv="${LUMEN_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/lumen/venv}"
 [[ -x $venv/bin/python ]] || venv="$here/.venv"
 libs=$(ls -d "$venv"/lib/python3*/site-packages/nvidia/*/lib 2>/dev/null | paste -sd:)
-LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$venv/bin/python" "$@"
+# Never an empty entry: the loader reads one as "the current folder".
+if [[ -n $libs ]]; then
+  export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+exec "$venv/bin/python" "$@"

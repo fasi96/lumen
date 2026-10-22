@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.0
+
+- **Lumen for Chrome can share to your share site:** `lumen share connect-code --copy` makes a one-time code with its own device key (it can only share and manage the videos it made; revoke it on the dashboard under Devices).
+- **Share page on phones:** edge-to-edge video, controls that fit one row, working fullscreen; it also waits for a transcript that's still being written.
+- **Security review fixes** (share site, recorder, setup):
+  - The share page and its link previews only ever treat a recording's details (size, codec, the clean-up badge, the transcript) as data, never as page markup; transcripts must be JSON and have a size limit.
+  - A device key has a daily allowance of Workers AI calls and uploads, can't upload once the site is past the free 10 GB, and request bodies are size-limited.
+  - Video passwords: PBKDF2 instead of one SHA-256 (old ones are upgraded on their next unlock), 10 wrong tries lock the form for 15 minutes, the unlock cookie no longer contains the hash, and a locked video's page doesn't show its title.
+  - Dashboard: sessions end after 30 days on the server, there's a Sign out button, and the session cookie only changes things from the dashboard's own pages.
+  - Errors don't show internal details; video ids are unbiased random text.
+  - The share link and the card's title go to `wl-copy` and the card renderer on stdin, never on a command line (other users can read those); `vshare setup` takes the key only on stdin.
+  - vshare and the clean-up tools refuse redirects (the key never follows one), insist on https, read replies with a size limit, and accept only well-formed share ids from the site.
+  - Python started from setup and the bubble's control script doesn't import modules from the folder you're in; no empty entry on the loader path; `npm ci --ignore-scripts`.
+  - The clean-up writes private files with fresh names and decodes at most 4 hours of audio; the setup test uses a new private folder.
+  - The developer-only camera scripts have hash locks; the bundled models' NOTICE cites versioned download links.
+  - **The face bubble gets its own environment** (`~/.local/share/lumen/cam-venv`), installed from hash-locked lists that include the tools building pycairo and pygobject from source, so every file is checked. If you set the bubble up before 1.3.0 it keeps working offline from the old one; `lumen setup bubble` moves it over.
+
 ## 1.2.2
 
 - Share links: setup pins your Cloudflare account in the share site's settings, so an update can never publish into a different account; if wrangler is signed in to the wrong one, it says so and how to switch.

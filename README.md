@@ -133,7 +133,7 @@ Once you've added the terminal commands (Settings → Add-ons…), `lumen help` 
 
 (or `lumen uninstall` if you added the terminal commands). Run it **before** `omarchy plugin remove io.github.fasi96.lumen`; it removes the bar plugin too. If you already removed the plugin, run `~/.local/share/lumen/uninstaller/setup.sh uninstall` (that copy exists once any add-on was set up; if you never added one, only small settings files in `~/.config/gif-record` and `~/.cache/gif-record` are left behind). It removes exactly what setup added, using the record setup keeps in `~/.config/lumen/installed.json`:
 
-- the speech AI and, if Lumen downloaded it, the speech model;
+- the speech AI and the face bubble's camera AI, and, if Lumen downloaded it, the speech model;
 - the shortcut block in your Hyprland bindings (left alone if you've edited it);
 - the terminal commands it linked (never ones that were yours);
 - Lumen's working files, and, if you say yes, your settings and your list of shared videos;
@@ -146,10 +146,10 @@ Once you've added the terminal commands (Settings → Add-ons…), `lumen help` 
 Recording uses only what Omarchy ships: `gpu-screen-recorder`, `ffmpeg`, `slurp`, `jq`, `wl-clipboard`, `pactl` (libpulse), `gum`, `chromium` (the mic tuner's window). Everything below is installed only when you switch the add-on on, and only after you say yes:
 
 - **Arch packages** (with `sudo pacman -S --needed`, which asks for your password): `uv` (speech AI, face bubble), `gtk4-layer-shell` and `python-gobject` (face bubble; Omarchy usually has them), `nodejs` and `npm` (share links), `wf-recorder` (backup recorder for graphics the main one can't use: `lumen setup recorder`).
-- **Python packages**, exact versions with checked hashes: `setup/requirements-*.lock` (speech AI, in `~/.local/share/lumen/venv`) and `cam/lumen_cam.py.lock` (face bubble, in uv's cache). uv downloads its own copy of Python 3.12 if your system doesn't have it.
+- **Python packages**, exact versions with checked hashes: `setup/requirements-*.lock` (speech AI, in `~/.local/share/lumen/venv`) and `cam/requirements.lock` (face bubble, in `~/.local/share/lumen/cam-venv`; the tools that build two of its packages from source are hash-locked too, in `cam/build-constraints.lock`). uv downloads its own copy of Python 3.12 if your system doesn't have it.
 - **The speech model**: [faster-whisper large-v3-turbo](https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo) at a pinned revision, 1.6 GB, from Hugging Face.
 - **The face bubble's models**: two MediaPipe models, bundled (see `cam/models/NOTICE.md`).
-- **Share links**: `wrangler` (Cloudflare's CLI, exact version from `share/package-lock.json`, installed with `npm ci`). In your Cloudflare account it creates a Worker, an R2 bucket and a D1 database, sets two secrets (`ADMIN_TOKEN`, `PASSWORD_SALT`), and uses Workers AI when the speech AI runs on Cloudflare.
+- **Share links**: `wrangler` (Cloudflare's CLI, exact version from `share/package-lock.json`, installed with `npm ci --ignore-scripts`). In your Cloudflare account it creates a Worker, an R2 bucket and a D1 database, sets two secrets (`ADMIN_TOKEN`, `PASSWORD_SALT`), and uses Workers AI when the speech AI runs on Cloudflare.
 
 ## Contributing
 

@@ -1,10 +1,15 @@
 """Drive `lumen setup` in a fake, empty HOME through a real terminal, answering each menu.
 
-    python3 setup/test_setup_pty.py /tmp/fakehome   (videos on this computer, AI off, no bubble)
-"""
-import os, pty, re, select, sys, time
+    python3 setup/test_setup_pty.py        (videos on this computer, AI off, no bubble)
 
-FAKE = sys.argv[1]
+The fake HOME is a new private folder (mkdtemp, 0700) that no one else could have
+prepared: its .local/bin goes first on PATH, so it must be ours.
+"""
+import os, pty, re, select, sys, tempfile, time
+
+FAKE = tempfile.mkdtemp(prefix="lumen-fakehome-")
+print(f"fake HOME: {FAKE}", flush=True)
+SCREEN = os.path.join(FAKE, "screen.txt")
 env = dict(os.environ, HOME=FAKE, XDG_DATA_HOME=f"{FAKE}/.local/share", XDG_CONFIG_HOME=f"{FAKE}/.config",
            TERM="xterm-256color", COLUMNS="120", LINES="40")
 env["PATH"] = f"{FAKE}/.local/bin:" + env["PATH"]
@@ -34,7 +39,8 @@ while time.time() - t0 < 240:
             break
         out += chunk
     plain = re.sub(r"\x1b\[[0-9;?<>=]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[=>]", "", out)
-    open(FAKE + ".screen.txt", "w").write(plain)
+    with open(SCREEN, "w") as f:
+        f.write(plain)
     if step < len(STEPS) and STEPS[step][0] in plain:
         time.sleep(1.0)
         for k in STEPS[step][1]:

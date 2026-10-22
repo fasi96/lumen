@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import subprocess
+import sys
 import tempfile
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -138,7 +139,11 @@ def main():
     ap.add_argument("--title", default="Screen recording")
     ap.add_argument("--meta", default="")
     ap.add_argument("--badge", default="")
+    ap.add_argument("--text", help="'-': read {title, meta, badge} as JSON from stdin (keeps them off the command line)")
     a = ap.parse_args()
+    if a.text == "-":
+        t = json.loads(sys.stdin.read(64 * 1024) or "{}")
+        a.title, a.meta, a.badge = (str(t.get(k) or d)[:300] for k, d in (("title", a.title), ("meta", a.meta), ("badge", a.badge)))
     if a.what == "storyboard":
         storyboard(a.video, a.out)
     else:

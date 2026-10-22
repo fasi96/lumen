@@ -4,7 +4,7 @@
 # ///
 """Render the blob over a video (or a camera) to judge how it moves.
 
-    uv run proto.py IN.mp4 OUT.mp4 [--crop X,Y,S] [--from SEC] [--to SEC]
+    uv run --locked proto.py IN.mp4 OUT.mp4 [--crop X,Y,S] [--from SEC] [--to SEC]
 
 Left: the camera crop the blob sees. Right: the blob on a desktop-ish backdrop.
 """

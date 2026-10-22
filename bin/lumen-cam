@@ -13,7 +13,8 @@ pidf="$XDG_RUNTIME_DIR/lumen-cam.pid"
 sock="$XDG_RUNTIME_DIR/lumen-cam.sock"
 
 send() {
-  python3 - "$sock" "$*" <<'PY'
+  # -I: run from any folder without importing modules that happen to sit in it.
+  python3 -I - "$sock" "$*" <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.settimeout(1)
@@ -46,5 +47,12 @@ esac
 
 stop
 echo $$ >"$pidf"
-# Layer shell has to be loaded before Wayland.
-LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec uv run -q --locked --project "$here" --script "$here/lumen_cam.py" "$@"
+# Layer shell has to be loaded before Wayland. The camera AI's environment is made by
+# `lumen setup bubble` from hash-locked lists (cam/requirements.lock, build tools included).
+venv="${LUMEN_CAM_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/lumen/cam-venv}"
+if [[ -x $venv/bin/python ]]; then
+  LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec "$venv/bin/python" "$here/lumen_cam.py" "$@"
+fi
+# Set up before 1.3.0: the environment uv made from the script's lock, offline only, so
+# nothing new is ever fetched or built here (if it's gone: lumen setup bubble).
+LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec uv run -q --locked --offline --project "$here" --script "$here/lumen_cam.py" "$@"

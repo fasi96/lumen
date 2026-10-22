@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sys
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = (glob.glob(os.path.join(HERE, "models", "*.gguf")) or [None])[0]
@@ -49,12 +48,10 @@ def run_local(prompt):
 
 
 def run_cloud(prompt):
-    base, token = cloud_conf()
-    req = urllib.request.Request(f"{base}/api/complete", data=json.dumps({"prompt": prompt}).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {token}", "User-Agent": "lumen-meta/1.0",
-                                          "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.loads(r.read()).get("text", "")
+    sys.path.insert(0, HERE)
+    from clean import cloud_post     # https only, no redirects, a capped reply
+    return cloud_post("/api/complete", json.dumps({"prompt": prompt}).encode(), "application/json", 120,
+                      256 * 1024, agent="lumen-meta/1.0").get("text", "")
 
 
 PROMPT = """You name screen recordings for a Loom-style share page. Below is a timestamped transcript

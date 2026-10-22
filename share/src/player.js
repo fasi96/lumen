@@ -107,6 +107,9 @@ export const STUDIO_CSS = `
   .line.now .t { color:var(--accent); }
   .line.hide { display:none; }
   .line mark { background:color-mix(in srgb, var(--accent) 35%, transparent); color:inherit; border-radius:3px; }
+  .wait { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; margin:14px 8px; }
+  .wait span { width:14px; height:14px; border-radius:50%; border:2px solid var(--line); border-top-color:var(--accent); animation:spin .9s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg) } }
   .chap { font-size:11px; letter-spacing:.08em; color:var(--muted); padding:12px 8px 4px; text-transform:uppercase; }
   .keys { color:var(--muted); font-size:12px; margin-top:16px; text-align:center; }
 
@@ -127,6 +130,7 @@ export const STUDIO_CSS = `
   .clean { display:inline-flex; align-items:center; gap:6px; margin-left:10px; padding:2px 10px 2px 8px; border-radius:20px;
     background:var(--accent-soft); color:var(--accent); font-size:12.5px; font-weight:600; vertical-align:1px; cursor:default; }
   .clean svg { flex:none; }
+  .clean[hidden] { display:none; }   /* display:inline-flex above would otherwise beat [hidden] */
   .marks { position:absolute; left:0; right:0; top:0; height:8px; pointer-events:none; }
   .mark { position:absolute; top:0; width:6px; height:6px; margin-left:-3px; border-radius:50%; background:var(--accent);
     box-shadow:0 0 0 2px var(--surface); }
@@ -165,6 +169,39 @@ export const STUDIO_CSS = `
     .side { max-height:55vh; }
     .keys { display:none; }
   }
+
+  /* Phones: the video goes edge to edge, the controls fit one row (speed becomes one
+     button that steps through the speeds), the transcript sits flush below. */
+  @media (max-width: 640px) {
+    .wrap { padding:14px 0 32px; }
+    .brand, .head { padding-inline:16px; }
+    .brand { margin-bottom:14px; }
+    .head { margin-bottom:14px; gap:12px; }
+    .head h1 { font-size:19px; }
+    .who { gap:12px; }
+    .avatar { width:38px; height:38px; font-size:16px; }
+    .clean { display:flex; width:max-content; margin:6px 0 0; }
+    .clean[hidden] { display:none; }
+    .studio { gap:14px; }
+    .stage, .side { border-radius:0; border-inline:0; box-shadow:none; }
+    .side { max-height:60vh; }
+    .controls { padding:6px 10px 8px; }
+    .row { gap:2px; margin-top:4px; }
+    .time { min-width:0; margin-left:4px; font-size:12.5px; }
+    .speeds { background:transparent; padding:0; }
+    .speeds button:not(.on) { display:none; }
+    .speeds button.on { background:transparent; box-shadow:none; min-width:46px; font-size:13.5px; padding:8px 6px; }
+    .icon { width:40px; height:40px; }
+    .bigplay { width:64px; height:64px; margin:-32px 0 0 -32px; }
+  }
+  /* Touch screens: no hover, so no hover preview; a bigger bar to grab, knob always shown. */
+  @media (hover: none) {
+    .track { height:30px; }
+    .rail { top:13px; }
+    .marks { top:3px; }
+    .knob { top:9px; opacity:1; }
+    .tip { display:none !important; }
+  }
 `
 
 export const STUDIO_JS = `
@@ -191,7 +228,7 @@ export const STUDIO_JS = `
   v.addEventListener("loadeddata", loaded); v.addEventListener("error", loaded); setTimeout(loaded, 8000)
   $(".end").onclick = e => e.stopPropagation()
   $("#replay").onclick = () => { v.currentTime = 0; v.play() }
-  $("#endcopy").onclick = e => { navigator.clipboard.writeText(location.href.split("?")[0]); e.currentTarget.textContent = "Copied" }
+  $("#endcopy").onclick = $("#copy").onclick = e => { navigator.clipboard.writeText(location.href.split("?")[0]); e.currentTarget.textContent = "Copied" }
   v.onpause = () => { $("#play").innerHTML = ICONS.play }
 
   // ---- speed
@@ -199,9 +236,16 @@ export const STUDIO_JS = `
   const setRate = r => { v.playbackRate = r; store("rate", r)
     for (const b of speeds.children) b.classList.toggle("on", Number(b.dataset.r) === r) }
   for (const r of RATES) { const b = document.createElement("button"); b.textContent = r + "×"; b.dataset.r = r
-    b.onclick = () => setRate(r); speeds.appendChild(b) }
+    // On phones only the current speed shows; tapping it steps to the next.
+    b.onclick = () => setRate(b.classList.contains("on") && matchMedia("(max-width: 640px)").matches
+      ? RATES[(RATES.indexOf(r) + 1) % RATES.length] : r)
+    speeds.appendChild(b) }
   const saved = Number(store("rate")) || 1
-  v.addEventListener("loadedmetadata", () => { setRate(saved); buildRail(); tick() })
+  v.addEventListener("loadedmetadata", () => {
+    setRate(saved); buildRail(); tick()
+    // The player takes the video's own shape (a browser tab is rarely exactly 16:9), within reason.
+    if (v.videoWidth && v.videoHeight) screen.style.aspectRatio = Math.min(2.4, Math.max(1.2, v.videoWidth / v.videoHeight)).toFixed(4)
+  })
   setRate(saved)
 
   // ---- progress rail, one segment per chapter
@@ -327,25 +371,71 @@ export const STUDIO_JS = `
   const side = $(".side")
   if (side) new ResizeObserver(() => { if (innerWidth > 980) side.style.height = stage.offsetHeight + "px"; else side.style.height = "" }).observe(stage)
 
-  fetch(location.pathname.replace(/\\/$/, "") + "/transcript.json").then(r => r.ok ? r.json() : null).then(d => {
-    if (!d || !d.cues || !d.cues.length) { document.querySelector(".studio").classList.add("solo"); side && side.remove(); ccBtn.remove(); return }
-    cues = d.cues; chapters = (d.chapters || []).filter(c => c.t < (v.duration || 1e9))
-    words = d.words || []; cleanup = d.cleanup && d.cleanup.marks && d.cleanup.marks.length ? d.cleanup : null
-    board = d.storyboard || null
-    if (cleanup) {
-      const b = $(".clean"), parts = []
-      if (cleanup.fillers) parts.push(cleanup.fillers + (cleanup.fillers === 1 ? " um" : " ums"))
-      if (cleanup.pauses) parts.push(cleanup.pauses + (cleanup.pauses === 1 ? " pause" : " pauses"))
-      b.innerHTML = SPARK + "Cleaned up: " + parts.join(" & ") + " removed"
-      b.title = "Filler words and long pauses were cut automatically: " + cleanup.before.toFixed(0) + " s → " + cleanup.after.toFixed(0) + " s (" + Math.round(cleanup.seconds / cleanup.before * 100) + "% shorter)"
-      b.hidden = false
+  // The transcript. Lumen for Chrome marks it {pending: true} while your share site's AI
+  // is still writing it (the link is copied before that's done), so a page opened early
+  // shows "Writing the transcript…" and checks again every few seconds; the title and
+  // summary written with it are filled in too.
+  const studio = document.querySelector(".studio")
+  let tries = 0, waited = false, built = false
+  const solo = () => { studio.classList.add("solo"); side && side.remove(); ccBtn.remove() }
+  const applyCleanup = () => {
+    if (!cleanup) return
+    // Numbers only, and the words go in as text: the transcript file is data, never markup.
+    const n = x => Math.max(0, Math.round(Number(x)) || 0)
+    const fillers = n(cleanup.fillers), pauses = n(cleanup.pauses)
+    const before = Number(cleanup.before) || 0, after = Number(cleanup.after) || 0, cut = Number(cleanup.seconds) || 0
+    const b = $(".clean"), parts = []
+    if (fillers) parts.push(fillers + (fillers === 1 ? " um" : " ums"))
+    if (pauses) parts.push(pauses + (pauses === 1 ? " pause" : " pauses"))
+    b.innerHTML = SPARK
+    b.append("Cleaned up: " + parts.join(" & ") + " removed")
+    b.title = before ? "Filler words and long pauses were cut automatically: " + before.toFixed(0) + " s → " + after.toFixed(0) + " s (" + Math.round(cut / before * 100) + "% shorter)" : ""
+    b.hidden = false
+  }
+  // Only after waiting on this page: otherwise a later rename on the dashboard wins.
+  const applyMeta = d => {
+    if (d.title) { $(".head h1").textContent = d.title; document.title = d.title }
+    if (d.summary) {
+      let p = $(".summary")
+      if (!p) { p = document.createElement("p"); p.className = "summary"; $(".head h1").parentElement.appendChild(p) }
+      p.textContent = d.summary
     }
-    buildLines(); buildRail(); setCC(ccOn); follow()
-  }).catch(() => {})
+  }
+  const loadTranscript = () => fetch(location.pathname.replace(/\\/$/, "") + "/transcript.json", { cache: "no-store" })
+    .then(r => r.ok ? r.json() : null).then(d => {
+      // Hover frames work even without a transcript.
+      board = (d && d.storyboard) || board
+      const pending = !!(d && d.pending) && tries < 60       // gives up after ~4 minutes
+      const has = !!(d && d.cues && d.cues.length)
+      if (pending) { waited = true; tries++; setTimeout(loadTranscript, 4000) }
+      if (!has) {
+        if (!pending) return solo()
+        if (side && !side.querySelector(".wait")) { $(".lines").innerHTML = '<p class="wait"><span></span>Writing the transcript…</p>'; ccBtn.hidden = true }
+        return
+      }
+      cues = d.cues; chapters = (d.chapters || []).filter(c => c.t < (v.duration || 1e9))
+      words = d.words || []; cleanup = d.cleanup && d.cleanup.marks && d.cleanup.marks.length ? d.cleanup : null
+      if (!built || !pending) {
+        built = true; ccBtn.hidden = false
+        applyCleanup(); buildLines(); buildRail(); setCC(ccOn); follow()
+      }
+      if (waited && !pending) applyMeta(d)
+    }).catch(() => {})
+  loadTranscript()
 
   // ---- misc controls
   $("#mute").onclick = () => { v.muted = !v.muted; $("#mute").innerHTML = v.muted ? ICONS.mute : ICONS.vol }
-  $("#fs").onclick = () => document.fullscreenElement ? document.exitFullscreen() : stage.requestFullscreen()
+  $("#fs").onclick = async () => {
+    if (document.fullscreenElement) return document.exitFullscreen()
+    if (stage.requestFullscreen) {
+      await stage.requestFullscreen().catch(() => {})
+      // A wide video on a phone held upright: turn to landscape (Android; ignored elsewhere).
+      if (document.fullscreenElement && v.videoWidth > v.videoHeight) window.screen.orientation?.lock?.("landscape").catch(() => {})
+    } else if (v.webkitEnterFullscreen) {
+      v.webkitEnterFullscreen()   // iPhone: only the video itself can go full screen
+    }
+  }
+  document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) try { window.screen.orientation?.unlock?.() } catch {} })
   function tick() { paint(); follow() }
   v.addEventListener("timeupdate", tick); v.addEventListener("progress", paint); v.addEventListener("seeked", tick)
   ;(function loop() { if (!v.paused) tick(); requestAnimationFrame(loop) })()
@@ -378,7 +468,7 @@ export function studioBody({ id, title, facts, link, poster, owner = "", summary
       </div>
     </div>
     <div class="actions">
-      <button class="btn" onclick="navigator.clipboard.writeText('${link}');this.textContent='Copied'">Copy link</button>
+      <button class="btn" id="copy">Copy link</button>
       <a class="btn" href="/v/${id}/video.mp4?dl=1">Download</a>
     </div>
   </div>
