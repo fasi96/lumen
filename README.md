@@ -112,9 +112,10 @@ Once you've added the terminal commands (Settings → Add-ons…), `lumen help` 
 ## Privacy
 
 - Recordings are saved in `~/Videos`. Nothing is uploaded unless you turn on share links.
-- With **"This computer only"**, your audio never leaves your machine.
+- **Removing ums:** you choose where the speech AI runs. On your NVIDIA card or on this computer (**This computer** in Settings), your audio never leaves your machine: when the card is busy, the processor does the work. The soundtrack goes to your own Cloudflare account's AI only if you pick **Cloudflare**, or **Automatic** (the card first, then Cloudflare), and never before you've picked.
 - With share links, videos and transcripts go only to **your** Cloudflare account. Anyone who has a link can watch that video, so set a password on anything private.
-- With **"This computer only"**, AI titles are only written if the local model can run on your machine; otherwise the video keeps a plain title. Nothing is sent to Cloudflare's AI.
+- With **This computer**, AI titles are only written if the local model can run on your machine; otherwise the video keeps a plain title. Nothing is sent to Cloudflare's AI.
+- **Your name** is on share pages and link previews only if you typed one in setup. Leave it empty and they show the ✦ mark; Lumen never puts your account's name or login there instead.
 - Lumen has no servers, accounts or analytics of its own.
 
 ## Known limitations
@@ -148,7 +149,7 @@ Recording uses only what Omarchy ships: `gpu-screen-recorder`, `ffmpeg`, `slurp`
 - **Arch packages** (with `sudo pacman -S --needed`, which asks for your password): `uv` (speech AI, face bubble), `gtk4-layer-shell` and `python-gobject` (face bubble; Omarchy usually has them), `nodejs` and `npm` (share links), `wf-recorder` (backup recorder for graphics the main one can't use: `lumen setup recorder`).
 - **Python packages**, exact versions with checked hashes: `setup/requirements-*.lock` (speech AI, in `~/.local/share/lumen/venv`) and `cam/requirements.lock` (face bubble, in `~/.local/share/lumen/cam-venv`; the tools that build two of its packages from source are hash-locked too, in `cam/build-constraints.lock`). uv downloads its own copy of Python 3.12 if your system doesn't have it.
 - **The speech model**: [faster-whisper large-v3-turbo](https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo) at a pinned revision, 1.6 GB, from Hugging Face.
-- **The face bubble's models**: two MediaPipe models, bundled (see `cam/models/NOTICE.md`).
+- **The face bubble's models**: two MediaPipe models, bundled, under the Apache License 2.0 (see `cam/models/NOTICE.md` and the licence text next to it).
 - **Share links**: `wrangler` (Cloudflare's CLI, exact version from `share/package-lock.json`, installed with `npm ci --ignore-scripts`). In your Cloudflare account it creates a Worker, an R2 bucket and a D1 database, sets two secrets (`ADMIN_TOKEN`, `PASSWORD_SALT`), and uses Workers AI when the speech AI runs on Cloudflare.
 
 ## Contributing

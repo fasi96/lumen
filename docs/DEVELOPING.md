@@ -29,6 +29,19 @@ Setup links the commands into `~/.local/bin`; the plugin itself is wherever `oma
 - Share config: `~/.config/vshare/config.json`, share index `~/.local/share/vshare/shares.json`
 - Recordings: `~/Videos/`, `~/Videos/GIFs/`, `~/Videos/uncut/`
 
+## Privacy rules (keep these true)
+
+- **The soundtrack goes to Cloudflare's AI only after the user picked an option that says so.**
+  The `ai` setting: `local` = this computer only (GPU, else the processor), `cloud` and
+  `auto` may use the share site's Workers AI. Every choice that setup or the popup calls
+  private saves `local`. Not set = `local` for the clean-up (`bin/gif-record`); only the
+  share upload itself (`bin/vshare`, which sends the video to the same Cloudflare account
+  anyway) treats not set as `auto`. Switching "Remove ums" on must always pass through
+  `lumen setup ums`, which asks where it runs (`ready_ums` in `setup/setup.sh`). The
+  tools in `share/clean/` default to `--engine local` when run by hand.
+- **Only a name the user confirmed in setup is published** (share page, link-preview
+  card). Empty or not set means the ✦ mark; never the account's full name or login.
+
 ## Common tasks
 
 ```

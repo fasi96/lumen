@@ -688,9 +688,9 @@ Panel {
             fontSize: Style.font.bodySmall     // three long names: at body size "Cloudflare" ran off the edge
             value: root.ai === "gpu" || root.ai === "cpu" ? "local" : root.ai
             options: [
-              { value: "auto", label: "Automatic", icon: "󰁨", tooltip: "Your graphics card if it has room, else your Cloudflare's AI, else this computer's processor" },
-              { value: "local", label: "This computer", icon: "󰌾", tooltip: "Your audio never leaves this computer. Slower without an NVIDIA card" },
-              { value: "cloud", label: "Cloudflare", icon: "󰅟", tooltip: "Your own Cloudflare's AI. Falls back to this computer if it can't be reached" }
+              { value: "auto", label: "Automatic", icon: "󰁨", tooltip: "Graphics card if it has room. If not, sound goes to your Cloudflare's AI, else the processor" },
+              { value: "local", label: "This computer", icon: "󰌾", tooltip: "Your audio never leaves this computer: the NVIDIA card, or the processor when it's busy" },
+              { value: "cloud", label: "Cloudflare", icon: "󰅟", tooltip: "Sound goes to your own Cloudflare's AI. Falls back to this computer if it can't be reached" }
             ]
             onChanged: function(v) { root.choose("ai", v) }
           }

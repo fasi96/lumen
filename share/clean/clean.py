@@ -3,10 +3,13 @@
   run clean.py INPUT OUTDIR [--fillers] [--silences] [--lang auto|en|ur|hi]
                             [--codec compatible|smallest] [--pause 1.2]
                             [--width N] [--always] [--progress FILE]
+                            [--engine local|auto|gpu|cloud|cpu]
 
 --always writes clean.mp4 even when nothing was cut (the recorder hands us an
 un-encoded video and lets this be the single encode); --width shrinks it;
 --progress is passed to ffmpeg's -progress so the bar can show the encode.
+--engine is where Whisper runs. Not given = local: this computer only. The audio
+only goes to Cloudflare's AI when you pass auto or cloud.
 
 Writes OUTDIR/transcript.json (words with times on the *output* timeline),
 OUTDIR/captions.vtt, OUTDIR/report.json, and OUTDIR/clean.mp4 when anything
@@ -111,9 +114,10 @@ class Asr:
       cloud — the same model on your own Cloudflare account via Workers AI (no GPU
               needed; free daily allowance; the audio is sent for transcription)
       cpu   — a small model on the processor (slower, still fully local)
+    "local" (the default) picks gpu if there's a usable GPU, else cpu.
     "auto" picks gpu if there's a usable GPU, else cloud if Cloudflare is set up, else cpu."""
 
-    def __init__(self, lang, engine="auto"):
+    def __init__(self, lang, engine="local"):
         # "local" is the privacy choice: this computer only (GPU if usable, else CPU),
         # never Cloudflare. "auto" may use the cloud when there's no usable GPU.
         if engine == "local":
@@ -372,7 +376,7 @@ def main():
     ap.add_argument("--fillers", action="store_true")
     ap.add_argument("--silences", action="store_true")
     ap.add_argument("--lang", default="auto")
-    ap.add_argument("--engine", default="auto", choices=["auto", "local", "gpu", "cloud", "cpu"])
+    ap.add_argument("--engine", default="local", choices=["auto", "local", "gpu", "cloud", "cpu"])
     ap.add_argument("--codec", default="compatible")
     ap.add_argument("--pause", type=float, default=1.2)
     ap.add_argument("--width", type=int, default=0)

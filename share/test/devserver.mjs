@@ -3,7 +3,8 @@
 // .dev.vars are never read (the config is dev/wrangler.toml). Used by test/smoke.mjs
 // and by Lumen for Chrome's end-to-end test.
 //
-//   const w = await startDevWorker({ schema: 'fresh' | 'legacy' | 'none' })
+//   const w = await startDevWorker({ schema: 'fresh' | 'legacy' | 'none', ai, vars })
+//     ai: true = a stand-in for Workers AI (dev/ai-stub.js); vars: extra worker vars
 //   w.url, w.admin (the ADMIN_TOKEN), w.salt (PASSWORD_SALT), await w.stop()
 
 import { spawn, execFileSync } from 'node:child_process';
@@ -17,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 const SHARE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WRANGLER = path.join(SHARE, 'node_modules', '.bin', 'wrangler');
 const CONFIG = path.join(SHARE, 'dev', 'wrangler.toml');
+const CONFIG_AI = path.join(SHARE, 'dev', 'wrangler.ai.toml');
 const ENV = { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1', NO_COLOR: '1' };
 
 // The database as a site from before device tokens had it (schema version 1).
@@ -37,7 +39,7 @@ export function d1(persist, args) {
 
 // persist: reuse an earlier run's local R2/D1 folder (then `schema` is ignored); salt: keep
 // an earlier run's PASSWORD_SALT (passwords set then still check).
-export async function startDevWorker({ schema = 'fresh', tmp, persist: reuse, salt: keepSalt } = {}) {
+export async function startDevWorker({ schema = 'fresh', tmp, persist: reuse, salt: keepSalt, ai = false, vars = {} } = {}) {
   const base = tmp || (fs.existsSync('/tmp/claude-1000') ? '/tmp/claude-1000' : os.tmpdir());
   const persist = reuse || fs.mkdtempSync(path.join(base, 'lumen-share-dev-'));
   if (reuse) schema = 'none';
@@ -50,8 +52,9 @@ export async function startDevWorker({ schema = 'fresh', tmp, persist: reuse, sa
   const port = await freePort();
   const admin = crypto.randomBytes(24).toString('hex');
   const salt = keepSalt || crypto.randomBytes(16).toString('hex');
-  const child = spawn(WRANGLER, ['dev', '--config', CONFIG, '--ip', '127.0.0.1', '--port', String(port),
+  const child = spawn(WRANGLER, ['dev', '--config', ai ? CONFIG_AI : CONFIG, '--ip', '127.0.0.1', '--port', String(port),
     '--persist-to', persist, '--var', `ADMIN_TOKEN:${admin}`, '--var', `PASSWORD_SALT:${salt}`,
+    ...Object.entries(vars).flatMap(([k, v]) => ['--var', `${k}:${v}`]),
     '--show-interactive-dev-session=false', '--log-level', 'warn'],
   { cwd: SHARE, env: ENV, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';

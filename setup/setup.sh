@@ -291,9 +291,13 @@ setup_ums() {
   cf_answers && opts+=("On my Cloudflare — smallest install (80 MB)")
   local pick profile ai
   pick=$(gum choose --header "  Where should it run?" "${opts[@]}") || return 1
+  # Both private choices save ai=local: this computer only (the NVIDIA card, or the
+  # processor when the card is busy or full), never Cloudflare. The soundtrack only goes
+  # to Cloudflare's AI after the Cloudflare choice here, or Automatic or Cloudflare in the popup.
+  # Matched on how each option starts: "On this computer … without NVIDIA" names NVIDIA too.
   case $pick in
-  *NVIDIA*) profile=nvidia ai=auto ;;
-  *Cloudflare*) profile=cloud ai=cloud ;;
+  "On my NVIDIA"*) profile=nvidia ai=local ;;
+  "On my Cloudflare"*) profile=cloud ai=cloud ;;
   *) profile=local ai=local ;;
   esac
   need_pkgs NEEDS_AI "The speech AI" || return 1
@@ -302,6 +306,11 @@ setup_ums() {
   "$GR" set clean on >/dev/null
   state_set ums "$profile"
   ok "On: ums and long pauses are cut when you stop"
+  case $profile in
+  nvidia) say "Your audio never leaves this computer. If the NVIDIA card is busy, the processor does the work." ;;
+  local) say "Your audio never leaves this computer." ;;
+  cloud) say "The soundtrack is sent to your own Cloudflare account's AI." ;;
+  esac
 }
 
 install_ai() {
@@ -351,9 +360,13 @@ install_ai() {
 
 ask_name() {
   title "Your name on share pages"
-  local current def name
-  current=$(jq -r '.owner // empty' "$SHARE_CONF" 2>/dev/null)
-  def=${current:-$(getent passwd "$USER" | cut -d: -f5 | cut -d, -f1)}
+  say "Anyone with one of your links sees it, on the share page and on the link's preview card."
+  local def name
+  # What you saved before is offered again, an empty name included. This account's full
+  # name is only the first suggestion, shown here for you to keep, change or clear;
+  # nothing but what you confirm here is ever published.
+  if jq -e 'has("owner")' "$SHARE_CONF" >/dev/null 2>&1; then def=$(jq -r '.owner' "$SHARE_CONF")
+  else def=$(getent passwd "$USER" | cut -d: -f5 | cut -d, -f1); fi
   name=$(gum input --value "$def" --header "  Leave it empty to show the ✦ mark instead") || exit 1
   json_set "$SHARE_CONF" owner "$name"
   ok "${name:-(no name, the ✦ mark)}"
@@ -426,7 +439,15 @@ recording_defaults() {
 # ---------- what's ready
 
 # Fast and offline: the popup runs this every time it opens.
-ready_ums() { [[ $(venv_profile) != none ]] && { [[ $(venv_profile) != cloud ]] || [[ -n $(cf_url) ]]; }; }
+# Share links install the small (Cloudflare) speech tools for their own use. For removing ums
+# that install only counts once you've chosen where the speech AI runs, so switching ums on
+# always asks first and a soundtrack is never sent to Cloudflare's AI unasked.
+ready_ums() {
+  case $(venv_profile) in
+  none) return 1 ;;
+  cloud) [[ -n $(cf_url) && -n $(jq -r '.ai // empty' "$REC_CONF" 2>/dev/null) ]] ;;
+  esac
+}
 ready_bubble() { command -v uv >/dev/null && { [[ $(state_get bubble) == yes ]] || [[ $(jq -r '.camera // "off"' "$REC_CONF" 2>/dev/null) == on ]]; }; }
 ready_share() { [[ -n $(cf_url) && -n $(cf_token) ]] && [[ $(venv_profile) != none ]]; }
 ready_shortcut() { "${RECORD[@]}" has-block shortcut || legacy_shortcut; }

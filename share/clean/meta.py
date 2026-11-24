@@ -1,11 +1,12 @@
 """Title, summary and chapters for a shared recording, written from its transcript.
 
-  run meta.py transcript.json [duration_seconds] [--engine auto|local|cloud]
+  run meta.py transcript.json [duration_seconds] [--engine local|auto|cloud]
 
 local — Qwen2.5 3B (models/*.gguf) through llama.cpp on this laptop (GPU if there's
         room, else the processor); nothing leaves the machine
 cloud — a small Llama on your own Cloudflare account (Workers AI, free allowance)
 auto  — local if llama.cpp and the model are installed, else cloud if set up.
+Not given = local: the transcript only goes to Cloudflare's AI when you pass auto or cloud.
 Prints {} when there's too little speech, or when no engine is available.
 """
 
@@ -81,7 +82,7 @@ def main():
         print("{}")
         return
     lines = "\n".join(f"[{c['s']:.0f}s] {c['text']}" for c in cues)[:24000]
-    engine = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else "auto"
+    engine = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else "local"
     requested = engine
     if engine == "auto":
         engine = "local" if local_ok() else "cloud" if cloud_conf() else None

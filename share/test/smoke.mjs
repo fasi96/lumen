@@ -1,8 +1,8 @@
 // Smoke test for the share worker, run locally with `wrangler dev` (nothing is deployed;
 // see devserver.mjs). Checks that the desktop flow (vshare's API calls with ADMIN_TOKEN,
 // the share page, Range streaming, the dashboard sign-in) still works, plus device
-// tokens, CORS for Lumen for Chrome, /api/info, and the self-migration of a site whose
-// database predates device tokens.
+// tokens, CORS for Lumen for Chrome, /api/info, the per-device daily limits, and the
+// self-migration of a site whose database predates device tokens.
 //
 //   cd share && node test/smoke.mjs        (needs `npm ci` in share/ first)
 
@@ -232,6 +232,45 @@ async function hardening() {
   (await import('node:fs')).rmSync(w.persist, { recursive: true, force: true });
 }
 
+// 1.3.1: transcription counts by minutes of audio (live captions call it every few seconds),
+// not against the AI-call cap, which still holds for /api/complete.
+async function audioMinutes() {
+  console.log('Transcription by audio minutes (1.3.1):');
+  const w = await startDevWorker({ schema: 'fresh', ai: true, vars: { DEVICE_AI_PER_DAY: '2', DEVICE_AUDIO_MIN_PER_DAY: '1' } });
+  try {
+    const admin = client(w.url, w.admin);
+    const dev = client(w.url, (await admin('POST', '/api/tokens', { name: 'Captions' })).json.token);
+    // n seconds of silence as a 16 kHz, 16-bit mono WAV.
+    const wav = (n) => {
+      const b = Buffer.alloc(44 + n * 32000);
+      b.write('RIFF', 0); b.writeUInt32LE(36 + n * 32000, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20);
+      b.writeUInt16LE(1, 22); b.writeUInt32LE(16000, 24); b.writeUInt32LE(32000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
+      b.write('data', 36); b.writeUInt32LE(n * 32000, 40);
+      return new Uint8Array(b);
+    };
+    const T = (who, n) => who('POST', '/api/transcribe?language=en', wav(n), { headers: { 'Content-Type': 'audio/wav' } });
+    let inf = (await dev('GET', '/api/info')).json;
+    ok(inf.features.includes('audio-minutes') && inf.schema === 4, 'the site says it counts audio minutes (schema 4)');
+    ok(inf.you.limits?.audioMin === 1 && inf.you.today?.audioMin === 0, '/api/info shows the device’s allowance and what it used today');
+    const runs = [];
+    for (let i = 0; i < 5; i++) runs.push((await T(dev, 10)).status);
+    ok(runs.every((x) => x === 200), `5 transcriptions pass a 2-call AI cap (${runs.join(' ')}): they count by minutes`);
+    inf = (await dev('GET', '/api/info')).json;
+    ok(Math.abs(inf.you.today.audioMin - 0.8) < 0.05, `50 s of audio counted as ${inf.you.today.audioMin} min`);
+    ok((await T(dev, 10)).status === 200, 'the call that crosses the minute still finishes');
+    const over = await T(dev, 1);
+    ok(over.status === 429 && /minutes of transcription/.test(over.json?.error || ''), 'the next one is refused (429) and says why');
+    ok((await T(admin, 5)).status === 200, 'the owner key is never limited');
+    const c = [];
+    for (let i = 0; i < 3; i++) c.push((await dev('POST', '/api/complete', { prompt: 'Title?' })).status);
+    ok(c[0] === 200 && c[1] === 200 && c[2] === 429, `/api/complete keeps the AI-call cap (${c.join(' ')})`);
+  } catch (e) {
+    failures++;
+    console.error('  ✗ crashed:', e, '\n', w.log().slice(-2000));
+  }
+  await w.stop();
+}
+
 async function legacy() {
   console.log('Existing site from before device tokens (schema version 1):');
   let w = await startDevWorker({ schema: 'legacy' });
@@ -246,7 +285,8 @@ async function legacy() {
   await w.stop({ keep: true });
   const cols = d1(w.persist, ['--command', 'PRAGMA table_info(videos)', '--json']);
   ok(['created_by', 'source', 'cut_seconds'].every((c) => cols.includes(c)), 'the worker added created_by, source, cut_seconds');
-  ok(/"v":\s*"3"/.test(d1(w.persist, ['--command', "SELECT v FROM meta WHERE k = 'schema_version'", '--json'])), 'meta.schema_version = 3');
+  ok(d1(w.persist, ['--command', 'PRAGMA table_info(usage)', '--json']).includes('audio_s'), 'the worker added usage.audio_s (1.3.1)');
+  ok(/"v":\s*"4"/.test(d1(w.persist, ['--command', "SELECT v FROM meta WHERE k = 'schema_version'", '--json'])), 'meta.schema_version = 4');
   // Running the migration again (say, two copies of the worker at once) is harmless:
   // forget the version, restart on the same database, use the API again.
   d1(w.persist, ['--command', "DELETE FROM meta WHERE k = 'schema_version'"]);
@@ -320,6 +360,7 @@ async function desktop() {
 
 await fresh();
 await hardening();
+await audioMinutes();
 await legacy();
 await desktop();
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

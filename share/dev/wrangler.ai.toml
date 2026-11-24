@@ -1,0 +1,18 @@
+# Local-only config: the share worker with a stand-in for Workers AI (dev/ai-stub.js), so
+# transcription limits can be tested with `wrangler dev` (miniflare: nothing touches
+# Cloudflare). Never deploy with this file. test/devserver.mjs uses it for { ai: true }.
+name = "lumen-share-dev-ai"
+main = "ai-stub.js"
+compatibility_date = "2026-09-01"
+
+[[r2_buckets]]
+binding = "VIDEOS"
+bucket_name = "lumen-videos-dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lumen-dev"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+OWNER_NAME = "Test Owner"

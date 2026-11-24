@@ -276,11 +276,12 @@ def upload(path, vid, title, transcript=None):
         print(f"vshare: polish skipped: {e}", file=sys.stderr)
 
 
-def default_owner():
-    """The name on share cards when none is set: the account's full name, else its user name."""
-    import pwd
-    p = pwd.getpwuid(os.getuid())
-    return (p.pw_gecos.split(",")[0] or p.pw_name).strip()
+def owner_name():
+    """The name for the link-preview card: only the one saved in setup. No name, or an
+    empty one, means the ✦ mark alone, as on the share page. The account's full name or
+    login is never used in its place: nobody was asked whether to publish those."""
+    owner = load(CONF, {}).get("owner")
+    return owner.strip() if isinstance(owner, str) else ""
 
 
 def polish(path, vid, title, doc, info):
@@ -304,12 +305,13 @@ def polish(path, vid, title, doc, info):
         if meta.get("chapters") or meta.get("summary"):
             doc.update({k: meta[k] for k in ("chapters", "summary") if meta.get(k)})
             call("PUT", f"/api/videos/{vid}/transcript", data=json.dumps(doc, ensure_ascii=False).encode())
-    owner = load(CONF, {}).get("owner") or default_owner()
+    # Name (if you gave one) and length; with no name, the length alone.
+    under_title = "  ·  ".join(p for p in (owner_name(), fmt_dur(info.get("duration"))) if p)
     c = doc.get("cleanup") or {}
     badge = f"{c['fillers']} um{'' if c['fillers'] == 1 else 's'} removed" if c.get("fillers") else ""
     with tempfile.NamedTemporaryFile(suffix=".jpg") as t:
         # The title (often written from what was said) goes on stdin, not the command line.
-        text = json.dumps({"title": title, "meta": f"{owner}  ·  {fmt_dur(info.get('duration'))}", "badge": badge})
+        text = json.dumps({"title": title, "meta": under_title, "badge": badge})
         if tool("art.py", "card", path, t.name, "--text", "-", stdin=text) is not None and os.path.getsize(t.name):
             with open(t.name, "rb") as f:
                 call("PUT", f"/api/videos/{vid}/card", data=f.read(), ctype="image/jpeg")

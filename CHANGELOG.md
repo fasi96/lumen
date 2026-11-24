@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.2
+
+Two privacy fixes from the marketplace review, and a licence file.
+
+- **The private choices in setup are private, as they say.** Setup offered "On my NVIDIA card — fast and private" but saved the *Automatic* setting, which sends the soundtrack to your Cloudflare's AI when the card is busy or out of memory (only if you have a share site). Without an NVIDIA card, "On this computer — private" was read as the NVIDIA choice: it saved *Automatic* too, and installed NVIDIA's libraries for nothing. Both now save *This computer*: the card, or the processor when the card is busy or missing, never Cloudflare. If you made either choice before 1.3.2, Lumen moves you to *This computer* at your next recording, once, and tells you. Pick *Automatic* in the popup's Settings if you want the Cloudflare fallback, and titles written by Cloudflare's AI, back.
+- **Switching "Remove ums" on always asks where the speech AI runs.** With share links set up first, the switch used to come on straight away and use your Cloudflare's AI without asking. A clean-up with nothing chosen now stays on this computer.
+- **An empty name stays empty.** Setup says that leaving your name empty shows the ✦ mark, but the link-preview card then showed your account's full name or login. The card now shows only a name you saved in setup, like the share page; with none, the ✦ mark and the video's length. A card made before 1.3.2 keeps what it has until you redraw it: `lumen share polish ID`.
+- Setup says where the name is shown, and offers an empty name again if that's what you saved.
+- Run by hand, the clean-up and title tools (`share/clean/clean.py`, `meta.py`) stay on this computer unless you pass `--engine auto` or `cloud`. Lumen itself always tells them where to run, so this changes nothing in the app.
+- The Apache License 2.0 text for the two bundled MediaPipe models is in `cam/models/LICENSE-Apache-2.0.txt`.
+
+## 1.3.1
+
+- **Share site: transcription counts by minutes of audio**, not against a device key's 600 Workers AI calls a day: 240 minutes a day per key (`DEVICE_AUDIO_MIN_PER_DAY`), a little over what Cloudflare's free allowance covers. Live captions (Lumen Notes for Chrome) send a sentence every few seconds and would have hit the call cap within the hour. Titles and summaries keep the call cap. `/api/info` shows a device its allowance and what it used today. The site updates its database by itself (schema 4).
+
 ## 1.3.0
 
 - **Lumen for Chrome can share to your share site:** `lumen share connect-code --copy` makes a one-time code with its own device key (it can only share and manage the videos it made; revoke it on the dashboard under Devices).

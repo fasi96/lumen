@@ -24,16 +24,20 @@ const DAY = 86400000
 const FREE_BYTES = 10 * 1024 ** 3
 // What this worker can do, for /api/info (clients check features, not version numbers).
 const API_VERSION = 2
-const FEATURES = ["tokens", "cors", "info", "source", "limits"]
-const SCHEMA_VERSION = 3
+const FEATURES = ["tokens", "cors", "info", "source", "limits", "audio-minutes"]
+const SCHEMA_VERSION = 4
 const MB = 1024 ** 2
 
 // Sizes a request body may have (the Worker itself caps any body at 100 MB).
 const MAX = { image: 8 * MB, transcript: 4 * MB, audio: 25 * MB, prompt: 64 * 1024, json: 256 * 1024, part: 100 * MB }
 // What one device key may use per day (UTC). A leaked key can't run up your Cloudflare
-// bill: Workers AI calls and uploaded bytes are counted, and a device can't upload once
-// the site is past the free 10 GB. Override with DEVICE_AI_PER_DAY / DEVICE_GB_PER_DAY.
+// bill: Workers AI calls, minutes of audio transcribed and uploaded bytes are counted, and a
+// device can't upload once the site is past the free 10 GB. Transcription counts by audio
+// minutes, not calls, so live captions (Lumen Notes: a call every few seconds) fit; 240
+// minutes is a little over what Cloudflare's free 10,000 Neurons a day cover (~214).
+// Override with DEVICE_AI_PER_DAY / DEVICE_AUDIO_MIN_PER_DAY / DEVICE_GB_PER_DAY.
 const DEVICE_AI_PER_DAY = 600
+const DEVICE_AUDIO_MIN_PER_DAY = 240
 const DEVICE_GB_PER_DAY = 5
 // Wrong video passwords: this many in a row lock that video's form for a while.
 const UNLOCK_TRIES = 10
@@ -291,7 +295,8 @@ async function info(env, who) {
   return json({
     api: API_VERSION, schema: SCHEMA_VERSION, features: FEATURES,
     owner: env.OWNER_NAME || "", used: await usedBytes(env), free: FREE_BYTES,
-    you: who.kind === "admin" ? { kind: "admin" } : { kind: "device", id: who.id, name: who.name, scope: who.scope },
+    you: who.kind === "admin" ? { kind: "admin" }
+      : { kind: "device", id: who.id, name: who.name, scope: who.scope, limits: limits(env), today: await usedToday(env, who) },
   })
 }
 
@@ -385,24 +390,56 @@ async function migrate(env) {
     // password tries per video.
     env.DB.prepare("CREATE TABLE IF NOT EXISTS usage (token_id TEXT NOT NULL, day TEXT NOT NULL, ai INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (token_id, day))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS unlock_fails (id TEXT PRIMARY KEY, n INTEGER NOT NULL, since INTEGER NOT NULL)"),
-    env.DB.prepare("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)").bind(String(SCHEMA_VERSION)),
   ])
+  // Version 3 → 4: seconds of audio each device had transcribed today.
+  await addColumn("ALTER TABLE usage ADD COLUMN audio_s REAL NOT NULL DEFAULT 0")
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)").bind(String(SCHEMA_VERSION)).run()
 }
 
-// Counts a device's AI calls and uploaded bytes for today; returns an error response
-// once it's past its daily allowance (the owner key is never limited).
-async function spend(env, who, { ai = 0, bytes = 0 }) {
+// Counts a device's AI calls, transcribed audio and uploaded bytes for today; returns an
+// error response once it's past its daily allowance (the owner key is never limited).
+// audio_s is added after a transcription (its length is known then), so the call that
+// crosses the line still finishes and the next one is refused.
+const limits = (env) => ({
+  ai: Number(env.DEVICE_AI_PER_DAY) || DEVICE_AI_PER_DAY,
+  audioMin: Number(env.DEVICE_AUDIO_MIN_PER_DAY) || DEVICE_AUDIO_MIN_PER_DAY,
+  bytes: (Number(env.DEVICE_GB_PER_DAY) || DEVICE_GB_PER_DAY) * 1024 ** 3,
+})
+const today = () => new Date().toISOString().slice(0, 10)
+
+async function spend(env, who, { ai = 0, bytes = 0, audio_s = 0, transcribing = false }) {
   if (who.kind !== "device") return null
-  const day = new Date().toISOString().slice(0, 10)
-  const row = await env.DB.prepare("INSERT INTO usage (token_id, day, ai, bytes) VALUES (?, ?, ?, ?) " +
-    "ON CONFLICT (token_id, day) DO UPDATE SET ai = ai + excluded.ai, bytes = bytes + excluded.bytes RETURNING ai, bytes")
-    .bind(who.id, day, ai, bytes).first()
-  const aiMax = Number(env.DEVICE_AI_PER_DAY) || DEVICE_AI_PER_DAY
-  const byteMax = (Number(env.DEVICE_GB_PER_DAY) || DEVICE_GB_PER_DAY) * 1024 ** 3
-  if (row && (row.ai > aiMax || row.bytes > byteMax)) {
-    return json({ error: `this device used its daily allowance on this share site (${aiMax} AI calls, ${byteMax / 1024 ** 3} GB); it resets at midnight UTC` }, 429)
+  const row = await env.DB.prepare("INSERT INTO usage (token_id, day, ai, bytes, audio_s) VALUES (?, ?, ?, ?, ?) " +
+    "ON CONFLICT (token_id, day) DO UPDATE SET ai = ai + excluded.ai, bytes = bytes + excluded.bytes, audio_s = audio_s + excluded.audio_s " +
+    "RETURNING ai, bytes, audio_s")
+    .bind(who.id, today(), ai, bytes, audio_s).first()
+  const max = limits(env)
+  if (row && (row.ai > max.ai || row.bytes > max.bytes)) {
+    return json({ error: `this device used its daily allowance on this share site (${max.ai} AI calls, ${max.bytes / 1024 ** 3} GB); it resets at midnight UTC` }, 429)
+  }
+  // Used-up audio minutes stop only transcription.
+  if (row && transcribing && row.audio_s >= max.audioMin * 60) {
+    return json({ error: `this device used its ${max.audioMin} minutes of transcription for today on this share site; it resets at midnight UTC` }, 429)
   }
   return null
+}
+
+async function usedToday(env, who) {
+  const r = await env.DB.prepare("SELECT ai, bytes, audio_s FROM usage WHERE token_id = ? AND day = ?").bind(who.id, today()).first()
+  return { ai: (r && r.ai) || 0, audioMin: +(((r && r.audio_s) || 0) / 60).toFixed(1), bytes: (r && r.bytes) || 0 }
+}
+
+// How long an audio file is: Whisper says so; else, for a WAV, its header; else a guess
+// from its size that errs long (16 kB a second, a 128 kbit/s MP3).
+function audioSeconds(buf, r) {
+  const d = Number(r && r.transcription_info && r.transcription_info.duration)
+  if (d > 0) return d
+  const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  if (buf.length > 44 && v.getUint32(0) === 0x52494646 && v.getUint32(8) === 0x57415645) {   // "RIFF" … "WAVE"
+    const rate = v.getUint32(28, true)
+    if (rate) return (buf.length - 44) / rate
+  }
+  return buf.length / 16000
 }
 
 async function sha256(text) {
@@ -431,7 +468,7 @@ async function transcribe(req, env, url, who) {
   const buf = await readBody(req, MAX.audio)
   if (!buf) return tooBig()
   if (!buf.length) return json({ error: "empty audio" }, 400)
-  const over = await spend(env, who, { ai: 1, bytes: buf.length })
+  const over = await spend(env, who, { bytes: buf.length, transcribing: true })
   if (over) return over
   let bin = ""
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000))
@@ -440,6 +477,7 @@ async function transcribe(req, env, url, who) {
   if (lang) input.language = lang.slice(0, 12)
   if (prompt) input.initial_prompt = prompt.slice(0, 1000)
   const r = await env.AI.run("@cf/openai/whisper-large-v3-turbo", input)
+  await spend(env, who, { audio_s: audioSeconds(buf, r) })
   const words = []
   for (const s of r.segments || []) for (const w of s.words || []) if (String(w.word).trim()) words.push({ w: String(w.word).trim(), s: w.start, e: w.end })
   return json({ language: r.transcription_info && r.transcription_info.language, duration: r.transcription_info && r.transcription_info.duration, words })
